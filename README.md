@@ -1,8 +1,6 @@
 # SwitchPort Resolver
 
 Version 2.2  
-Developer: Philip Cartier  
-Tag: `746f617374`
 
 A Windows-friendly GUI tool for **multi-device MAC table parsing, ARP correlation, and OUI vendor identification**.  
 Supports **5 Cisco switches** and **2 Cisco routers** simultaneously, with automatic hostname detection, offline/online vendor lookup, flexible MAC formatting, CSV export, and fast correlation of MAC → IP → Router.
