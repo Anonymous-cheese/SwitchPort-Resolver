@@ -1,4 +1,8 @@
-# Cisco-ARP-MAC-OUI-Lookup
+# SwitchPort Resolver
+
+Version 2.2  
+Developer: Philip Cartier  
+Tag: `746f617374`
 
 A Windows-friendly GUI tool for **multi-device MAC table parsing, ARP correlation, and OUI vendor identification**.  
 Supports **5 Cisco switches** and **2 Cisco routers** simultaneously, with automatic hostname detection, offline/online vendor lookup, flexible MAC formatting, CSV export, and fast correlation of MAC → IP → Router.
@@ -27,16 +31,21 @@ Designed for real-world Cisco troubleshooting environments and validated using I
 
 ###  Intelligent Hostname Detection  
 - Automatically reads device hostnames from CLI prompts in pasted text  
+- Hostname fields are pre-populated with tab defaults and replaced when a real hostname is detected
 - Example supported prompts:  
   ```
+  78-01-SW01
   78-01-RT01#
+  RTR01(config)# do show ip arp
   300-01-SW02#
   Switch01>
   ```
 
 ###  GUI-Based Workflow  
 - Clean, simple Tkinter interface  
-- Tabs for all 7 devices  
+- Starts in dark mode, with the toggle available in Settings
+- Tabs for all 7 devices, plus a Settings tab for occasional vendor DB actions
+- Settings includes developer credits, tag, and app version
 - Paste/output directly or load text files from SecureCRT, PuTTY, etc.
 
 ### Filters & Options  
@@ -51,6 +60,7 @@ Designed for real-world Cisco troubleshooting environments and validated using I
 
 ###  CSV Export  
 - One-click CSV export  
+- Export automatically refreshes the lookup first, so the CSV uses the current pasted data and filter settings
 - Sorted by:
   1. **Hostname alphabetically**
   2. **Interface in natural numeric order** (`Gi1/0/1`, `Gi1/0/2`, `Gi1/0/10`, etc.)
@@ -58,7 +68,12 @@ Designed for real-world Cisco troubleshooting environments and validated using I
 ###  Offline + Online OUI Lookup  
 - Offline lookup using Wireshark’s `manuf` database  
 - Automatic online pull when needed  
-- Caches results locally (`manuf_local.txt`)
+- Caches results locally (`~/.oui_lookup/manuf`)
+
+###  Windows EXE Packaging
+- Built with PyInstaller as `dist/SwitchPort Resolver.exe`
+- Uses `icon.ico` as the app icon
+- Bundles `manuf` so vendor lookup works offline
 
 ---
 
@@ -80,11 +95,11 @@ For each tab (`SW1`…`SW5`, `RT1-ARP`, `RT2-ARP`):
 - Enable/disable filters  
 - Keep CPU MAC filtering and ARP-only filtering as needed
 
-### 3. Click **Lookup**  
+### 3. Click **Lookup** or **Export CSV**  
 The results table populates with every MAC → IP correlation.
 
 ### 4. Export as CSV  
-Click **Export CSV** to save your results.
+Click **Export CSV** to refresh the lookup and save your results.
 
 ---
 
