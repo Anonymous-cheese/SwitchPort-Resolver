@@ -125,5 +125,7 @@ Click **Export CSV** to refresh the lookup and save your results.
 
 ---
 
-## 📜 License  
-MIT License — feel free to use, modify, and contribute.
+## 📜 License
+
+This project is licensed under the MIT License.
+You are free to use, modify, and contribute to this project, provided the original license and copyright notice are included.
