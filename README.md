@@ -5,8 +5,6 @@ Version 3.0
 A Windows-friendly GUI tool for **multi-device MAC table parsing, ARP correlation, and OUI vendor identification**.  
 Supports **5 Cisco switches** and **2 Cisco routers** simultaneously, with automatic hostname detection, offline/online vendor lookup, flexible MAC formatting, CSV export, and fast correlation of MAC → IP → Router.
 
-Designed for real-world Cisco troubleshooting environments and validated using IOS/IOS-XE outputs.
-
 ---
 
 ## Improvements in 3.0
@@ -19,8 +17,6 @@ Designed for real-world Cisco troubleshooting environments and validated using I
 - Added **Auto lookup after paste/load/drop** in Settings, including ARP-only lookup status showing loaded ARP entry counts.
 - Added sample MAC and ARP test files under `samples/`.
 - Added Desktop crash/debug logging to help diagnose future issues.
-- Removed the visible developer line from Settings while keeping the tag and version.
-- Kept Excel export dependency-free for end users by using standard-library `.xlsx` generation inside the bundled exe.
 
 ---
 
@@ -47,10 +43,10 @@ Designed for real-world Cisco troubleshooting environments and validated using I
 - Hostname fields are pre-populated with tab defaults and replaced when a real hostname is detected
 - Example supported prompts:  
   ```
-  78-01-SW01
-  78-01-RT01#
+  00-00-SW01
+  00-00-RT01#
   RTR01(config)# do show ip arp
-  300-01-SW02#
+  100-01-SW02#
   Switch01>
   ```
 
