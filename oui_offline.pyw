@@ -4,7 +4,12 @@ import re
 import csv
 import threading
 import urllib.request
+import zipfile
+import time
+import traceback
+import faulthandler
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -17,9 +22,124 @@ MANUF_URL = "https://www.wireshark.org/download/automated/data/manuf"
 CACHE_DIR = os.path.join(Path.home(), ".oui_lookup")
 CACHE_FILE = os.path.join(CACHE_DIR, "manuf")
 APP_NAME = "SwitchPort Resolver"
-APP_VERSION = "2.2"
-DEVELOPER_NAME = "Philip Cartier"
+APP_VERSION = "3.0"
 DEVELOPER_TAG = "746f617374"
+RESULT_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP Interface")
+CSV_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP_Interface")
+CRASH_LOG_NAME = "SwitchPort Resolver Crash Log.txt"
+
+# ---------------------------------------------------------------------------
+# Crash/debug logging
+# ---------------------------------------------------------------------------
+
+_LOG_FILE_HANDLE = None
+
+
+def desktop_path():
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class GUID(ctypes.Structure):
+                _fields_ = [
+                    ("Data1", wintypes.DWORD),
+                    ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD),
+                    ("Data4", ctypes.c_ubyte * 8),
+                ]
+
+            desktop_guid = GUID(
+                0xB4BFCC3A,
+                0xDB2C,
+                0x424C,
+                (ctypes.c_ubyte * 8)(0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41),
+            )
+            path_ptr = ctypes.c_wchar_p()
+            result = ctypes.windll.shell32.SHGetKnownFolderPath(
+                ctypes.byref(desktop_guid),
+                0,
+                None,
+                ctypes.byref(path_ptr),
+            )
+            if result == 0 and path_ptr.value and os.path.isdir(path_ptr.value):
+                path = path_ptr.value
+                ctypes.windll.ole32.CoTaskMemFree(path_ptr)
+                return path
+        except Exception:
+            pass
+
+        env_desktop = os.path.join(os.environ.get("USERPROFILE", str(Path.home())), "Desktop")
+        if os.path.isdir(env_desktop):
+            return env_desktop
+
+        onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveCommercial")
+        if onedrive:
+            onedrive_desktop = os.path.join(onedrive, "Desktop")
+            if os.path.isdir(onedrive_desktop):
+                return onedrive_desktop
+
+    desktop = os.path.join(Path.home(), "Desktop")
+    return desktop if os.path.isdir(desktop) else str(Path.home())
+
+
+def crash_log_path():
+    return os.path.join(desktop_path(), CRASH_LOG_NAME)
+
+
+def log_debug(message):
+    try:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        path = crash_log_path()
+        with open(path, "a", encoding="utf-8", errors="ignore") as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        pass
+
+
+def log_exception(prefix, exc_type=None, exc_value=None, exc_tb=None):
+    if exc_type is None:
+        exc_type, exc_value, exc_tb = sys.exc_info()
+    details = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    log_debug(f"{prefix}\n{details}")
+
+
+def setup_crash_logging():
+    global _LOG_FILE_HANDLE
+
+    log_debug("")
+    log_debug("=" * 80)
+    log_debug(f"{APP_NAME} {APP_VERSION} starting")
+    log_debug(f"Executable: {sys.executable}")
+    log_debug(f"Frozen: {bool(getattr(sys, 'frozen', False))}")
+    log_debug(f"Python: {sys.version}")
+    log_debug(f"Platform: {sys.platform}")
+
+    try:
+        _LOG_FILE_HANDLE = open(crash_log_path(), "a", encoding="utf-8", errors="ignore")
+        faulthandler.enable(file=_LOG_FILE_HANDLE, all_threads=True)
+        log_debug("faulthandler enabled")
+    except Exception:
+        _LOG_FILE_HANDLE = None
+        log_exception("Failed to enable faulthandler")
+
+    def excepthook(exc_type, exc_value, exc_tb):
+        log_exception("Unhandled main-thread exception", exc_type, exc_value, exc_tb)
+        if sys.__excepthook__:
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = excepthook
+
+    if hasattr(threading, "excepthook"):
+        def thread_excepthook(args):
+            log_exception(
+                f"Unhandled thread exception in {getattr(args.thread, 'name', 'unknown')}",
+                args.exc_type,
+                args.exc_value,
+                args.exc_traceback,
+            )
+
+        threading.excepthook = thread_excepthook
 
 # ---------------------------------------------------------------------------
 # Utility: bundled path helper for PyInstaller
@@ -382,6 +502,347 @@ def iface_sort_key(iface: str):
     return (1, *nums, iface)
 
 
+def _excel_col_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _xml_clean(value) -> str:
+    text = "" if value is None else str(value)
+    cleaned = []
+    for ch in text:
+        code = ord(ch)
+        if code in (9, 10, 13) or 32 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD:
+            cleaned.append(ch)
+    return "".join(cleaned)
+
+
+def _xml_text(value) -> str:
+    return escape(_xml_clean(value))
+
+
+def _xml_attr(value) -> str:
+    return escape(_xml_clean(value), {'"': "&quot;"})
+
+
+def _xlsx_cell(row_num: int, col_num: int, value, header: str = "", style=None) -> str:
+    cell_ref = f"{_excel_col_name(col_num)}{row_num}"
+    style_attr = f' s="{style}"' if style is not None else ""
+    text = _xml_clean(value).strip()
+
+    if header == "VLAN" and re.fullmatch(r"\d+", text or ""):
+        return f'<c r="{cell_ref}"{style_attr}><v>{int(text)}</v></c>'
+
+    return (
+        f'<c r="{cell_ref}" t="inlineStr"{style_attr}>'
+        f'<is><t xml:space="preserve">{_xml_text(value)}</t></is></c>'
+    )
+
+
+def _xlsx_row(row_num: int, values, headers=RESULT_HEADERS, style=None) -> str:
+    cells = []
+    for col_num, header in enumerate(headers, 1):
+        value = values[col_num - 1] if col_num <= len(values) else ""
+        cells.append(_xlsx_cell(row_num, col_num, value, header=header, style=style))
+    return f'<row r="{row_num}">{"".join(cells)}</row>'
+
+
+def write_xlsx_with_filters(path: str, rows, headers=RESULT_HEADERS):
+    # Write a small XLSX workbook using only the standard library. The exported
+    # range is an Excel table, so users get filter/sort dropdowns on every column.
+    max_rows = 1048576
+    if len(rows) + 1 > max_rows:
+        raise ValueError(f"Excel supports up to {max_rows - 1} exported data rows.")
+
+    headers = tuple(headers)
+    last_col = _excel_col_name(len(headers))
+    last_row = len(rows) + 1
+    table_ref = f"A1:{last_col}{last_row}"
+
+    col_widths = (22, 10, 18, 22, 36, 18, 22, 20)
+    cols_xml = "".join(
+        f'<col min="{i}" max="{i}" width="{width}" customWidth="1"/>'
+        for i, width in enumerate(col_widths[:len(headers)], 1)
+    )
+
+    sheet_rows = [_xlsx_row(1, headers, headers=headers, style=1)]
+    for row_num, row in enumerate(rows, 2):
+        sheet_rows.append(_xlsx_row(row_num, row, headers=headers))
+    sheet_data = "".join(sheet_rows)
+
+    sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <dimension ref="{table_ref}"/>
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>
+      <selection pane="bottomLeft"/>
+    </sheetView>
+  </sheetViews>
+  <sheetFormatPr defaultRowHeight="15"/>
+  <cols>{cols_xml}</cols>
+  <sheetData>{sheet_data}</sheetData>
+  <tableParts count="1"><tablePart r:id="rId1"/></tableParts>
+</worksheet>'''
+
+    table_columns = "".join(
+        f'<tableColumn id="{i}" name="{_xml_attr(header)}"/>'
+        for i, header in enumerate(headers, 1)
+    )
+    table_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="SwitchPortResults" displayName="SwitchPortResults" ref="{table_ref}" totalsRowShown="0">
+  <autoFilter ref="{table_ref}"/>
+  <tableColumns count="{len(headers)}">{table_columns}</tableColumns>
+  <tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>
+</table>'''
+
+    styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font>
+    <font><b/><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font>
+  </fonts>
+  <fills count="2">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="2">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>'''
+
+    workbook_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Results" sheetId="1" r:id="rId1"/></sheets>
+</workbook>'''
+
+    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>'''
+
+    root_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+
+    workbook_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>'''
+
+    sheet_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/>
+</Relationships>'''
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types_xml)
+        zf.writestr("_rels/.rels", root_rels_xml)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        zf.writestr("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels_xml)
+        zf.writestr("xl/tables/table1.xml", table_xml)
+        zf.writestr("xl/styles.xml", styles_xml)
+
+
+# ---------------------------------------------------------------------------
+# Native Windows file drag/drop support
+# ---------------------------------------------------------------------------
+
+class WindowsFileDropManager:
+    WM_DROPFILES = 0x0233
+    GWLP_WNDPROC = -4
+
+    def __init__(self, root, callback):
+        self.root = root
+        self.callback = callback
+        self.enabled = False
+        self._registered = False
+        self._old_proc = None
+        self._proc = None
+        self._pending_drops = []
+        log_debug("Initializing Windows drag/drop manager")
+
+        if os.name != "nt":
+            log_debug("Drag/drop disabled: non-Windows OS")
+            return
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            self.ctypes = ctypes
+            self.wintypes = wintypes
+            self.user32 = ctypes.windll.user32
+            self.shell32 = ctypes.windll.shell32
+
+            self.LRESULT = ctypes.c_ssize_t
+            self.WPARAM = ctypes.c_size_t
+            self.LPARAM = ctypes.c_ssize_t
+            self.WNDPROC = ctypes.WINFUNCTYPE(
+                self.LRESULT,
+                wintypes.HWND,
+                wintypes.UINT,
+                self.WPARAM,
+                self.LPARAM,
+            )
+
+            self._set_window_long = getattr(
+                self.user32,
+                "SetWindowLongPtrW",
+                self.user32.SetWindowLongW,
+            )
+            self._set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+            self._set_window_long.restype = ctypes.c_void_p
+
+            self.user32.CallWindowProcW.argtypes = [
+                ctypes.c_void_p,
+                wintypes.HWND,
+                wintypes.UINT,
+                self.WPARAM,
+                self.LPARAM,
+            ]
+            self.user32.CallWindowProcW.restype = self.LRESULT
+            self.user32.DefWindowProcW.argtypes = [
+                wintypes.HWND,
+                wintypes.UINT,
+                self.WPARAM,
+                self.LPARAM,
+            ]
+            self.user32.DefWindowProcW.restype = self.LRESULT
+
+            self.shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
+            self.shell32.DragAcceptFiles.restype = None
+            self.shell32.DragQueryFileW.argtypes = [
+                wintypes.HANDLE,
+                wintypes.UINT,
+                wintypes.LPWSTR,
+                wintypes.UINT,
+            ]
+            self.shell32.DragQueryFileW.restype = wintypes.UINT
+            self.shell32.DragQueryPoint.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.POINT),
+            ]
+            self.shell32.DragQueryPoint.restype = wintypes.BOOL
+            self.shell32.DragFinish.argtypes = [wintypes.HANDLE]
+            self.shell32.DragFinish.restype = None
+
+            self.enabled = True
+            log_debug("Windows drag/drop manager initialized")
+        except Exception:
+            self.enabled = False
+            log_exception("Windows drag/drop manager initialization failed")
+
+    def register(self, widget):
+        if not self.enabled:
+            log_debug("Drag/drop registration skipped: manager disabled")
+            return False
+        if self._registered:
+            return True
+
+        try:
+            widget.update_idletasks()
+            hwnd = self.wintypes.HWND(widget.winfo_id())
+            log_debug(f"Registering drag/drop root window hwnd={int(widget.winfo_id())}")
+
+            def wndproc(hwnd_arg, msg, wparam, lparam):
+                try:
+                    if msg == self.WM_DROPFILES:
+                        log_debug("WM_DROPFILES received")
+                        files, point = self._query_drop_files(wparam)
+                        log_debug(f"WM_DROPFILES query complete: files={len(files)} point={point}")
+                        self.shell32.DragFinish(wparam)
+                        log_debug("DragFinish complete")
+                        if files:
+                            self._pending_drops.append((files, point))
+                            log_debug("Drop queued for Tk mainloop polling")
+                        return 0
+
+                    return self._call_original(hwnd_arg, msg, wparam, lparam)
+                except Exception:
+                    log_exception("Exception inside native drag/drop window procedure")
+                    return self._call_original(hwnd_arg, msg, wparam, lparam)
+
+            proc = self.WNDPROC(wndproc)
+            old_proc = self._set_window_long(
+                hwnd,
+                self.GWLP_WNDPROC,
+                self.ctypes.cast(proc, self.ctypes.c_void_p),
+            )
+            if not old_proc:
+                return False
+
+            self._old_proc = old_proc
+            self._proc = proc
+            self._registered = True
+            self.shell32.DragAcceptFiles(hwnd, True)
+            log_debug(f"Drag/drop registration succeeded old_proc={old_proc}")
+            return True
+        except Exception:
+            log_exception("Drag/drop registration failed")
+            return False
+
+    def _call_original(self, hwnd, msg, wparam, lparam):
+        if self._old_proc:
+            return self.user32.CallWindowProcW(self._old_proc, hwnd, msg, wparam, lparam)
+        return self.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _query_drop_files(self, hdrop):
+        log_debug("Querying dropped files")
+        point = None
+        try:
+            pt = self.wintypes.POINT()
+            if self.shell32.DragQueryPoint(hdrop, self.ctypes.byref(pt)):
+                point = (pt.x, pt.y)
+        except Exception:
+            log_exception("Could not query drop point")
+            point = None
+
+        count = self.shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+        files = []
+        for index in range(count):
+            length = self.shell32.DragQueryFileW(hdrop, index, None, 0)
+            buf = self.ctypes.create_unicode_buffer(length + 1)
+            self.shell32.DragQueryFileW(hdrop, index, buf, length + 1)
+            files.append(buf.value)
+            log_debug(f"Dropped file[{index}]: {buf.value}")
+        return files, point
+
+    def pop_pending_drops(self):
+        drops = self._pending_drops[:]
+        self._pending_drops = []
+        return drops
+
+    def widget_for_drop_point(self, point):
+        widget = self.root
+        if point:
+            try:
+                x = self.root.winfo_rootx() + point[0]
+                y = self.root.winfo_rooty() + point[1]
+                widget = self.root.winfo_containing(x, y) or self.root
+                log_debug(f"Drop target widget: {widget}")
+            except Exception:
+                log_exception("Could not resolve drop target widget")
+                widget = self.root
+        return widget
+
+
 def correlate_mac_and_arp(
     switch_inputs,
     router_inputs,
@@ -511,7 +972,9 @@ THEMES = {
 class App:
     def __init__(self, root):
         self.root = root
+        self.root.report_callback_exception = self._report_callback_exception
         self.root.title(APP_NAME)
+        log_debug("App initialization started")
         icon_path = get_bundled_path("icon.ico")
         if os.path.isfile(icon_path):
             try:
@@ -530,6 +993,12 @@ class App:
 
         self.last_rows = []
         self.text_widgets = []
+        self.drop_blocks_by_widget = {}
+        self.drop_manager = WindowsFileDropManager(root, self._handle_dropped_files)
+        self.lookup_results = []
+        self.lookup_results_lock = threading.Lock()
+        self.auto_lookup_after_drop = tk.BooleanVar(value=True)
+        self.auto_lookup_pending = False
         self.dark_mode = tk.BooleanVar(value=True)
 
         main = ttk.Frame(root)
@@ -575,26 +1044,28 @@ class App:
 
         ttk.Button(opt_row, text="Lookup", command=self.lookup).pack(side="left", padx=(4, 2))
         ttk.Button(opt_row, text="Export CSV", command=self.export_csv).pack(side="left", padx=2)
+        ttk.Button(opt_row, text="Export Excel", command=self.export_xlsx).pack(side="left", padx=2)
         ttk.Button(opt_row, text="Clear All", command=self.clear_all).pack(side="left", padx=(12, 0))
 
         # Notebook with device tabs and occasional settings.
         nb = ttk.Notebook(main)
         nb.pack(fill="both", expand=True, pady=(4, 6))
+        self.notebook = nb
 
         self.switch_blocks = []
         self.router_blocks = []
-
-        for i in range(1, 6):
-            frame = ttk.Frame(nb)
-            nb.add(frame, text=f"SW{i}")
-            block = self._build_device_tab(frame, is_router=False, index=i)
-            self.switch_blocks.append(block)
 
         for i in range(1, 3):
             frame = ttk.Frame(nb)
             nb.add(frame, text=f"RT{i}-ARP")
             block = self._build_device_tab(frame, is_router=True, index=i)
             self.router_blocks.append(block)
+
+        for i in range(1, 6):
+            frame = ttk.Frame(nb)
+            nb.add(frame, text=f"SW{i}")
+            block = self._build_device_tab(frame, is_router=False, index=i)
+            self.switch_blocks.append(block)
 
         settings_frame = ttk.Frame(nb)
         nb.add(settings_frame, text="Settings")
@@ -639,6 +1110,17 @@ class App:
         status = ttk.Label(main, textvariable=self.status_var, anchor="w")
         status.pack(fill="x", pady=(4, 0))
         self._apply_theme()
+        self._register_root_drop_target()
+        self._poll_drop_queue()
+        self._poll_lookup_results()
+        log_debug("App initialization complete")
+
+    def _report_callback_exception(self, exc_type, exc_value, exc_tb):
+        log_exception("Unhandled Tk callback exception", exc_type, exc_value, exc_tb)
+        try:
+            messagebox.showerror("Error", f"Unexpected error:\n{exc_value}\n\nDetails were written to:\n{crash_log_path()}")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Theme handling
@@ -840,17 +1322,28 @@ class App:
         )
         load_btn.pack(side="left", padx=2)
 
-        hint_text = "Paste 'show mac address-table' output"
+        clear_tab_btn = ttk.Button(
+            top,
+            text="Clear Tab",
+            command=lambda f=frame: self._clear_tab(f)
+        )
+        clear_tab_btn.pack(side="left", padx=2)
+
+        hint_text = "Paste, load, or drag/drop 'show mac address-table' output"
         if is_router:
-            hint_text = "Paste 'show ip arp' (or 'show ip arp vrf ...') output"
+            hint_text = "Paste, load, or drag/drop 'show ip arp' output"
 
         ttk.Label(top, text=hint_text).pack(side="left", padx=(10, 0))
+        source_var = tk.StringVar(value="No file loaded")
+        ttk.Label(top, textvariable=source_var).pack(side="right", padx=(8, 0))
 
         text_frame = ttk.Frame(frame)
         text_frame.pack(fill="both", expand=True)
 
         txt = tk.Text(text_frame, wrap="none", height=12)
         self.text_widgets.append(txt)
+        txt.bind("<<Paste>>", self._on_text_paste, add="+")
+        txt.bind("<Control-v>", self._on_text_paste, add="+")
         vsb = ttk.Scrollbar(text_frame, orient="vertical", command=txt.yview)
         hsb = ttk.Scrollbar(text_frame, orient="horizontal", command=txt.xview)
         txt.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -861,12 +1354,16 @@ class App:
         text_frame.rowconfigure(0, weight=1)
         text_frame.columnconfigure(0, weight=1)
 
-        return {
+        block = {
             "frame": frame,
             "host_var": host_var,
             "default_host": default_host,
             "txt": txt,
+            "is_router": is_router,
+            "source_var": source_var,
         }
+        self._register_drop_target(txt, block)
+        return block
 
     def _build_settings_tab(self, frame):
         content = ttk.Frame(frame)
@@ -880,6 +1377,11 @@ class App:
             variable=self.dark_mode,
             command=self._apply_theme
         ).pack(anchor="w", padx=8, pady=8)
+        ttk.Checkbutton(
+            appearance,
+            text="Auto lookup after paste/load/drop",
+            variable=self.auto_lookup_after_drop
+        ).pack(anchor="w", padx=8, pady=(0, 8))
 
         vendor_db = ttk.LabelFrame(content, text="Vendor Database")
         vendor_db.pack(anchor="nw", fill="x", pady=(0, 8))
@@ -888,21 +1390,229 @@ class App:
         ttk.Button(db_row, text="Update DB", command=self.update_db).pack(side="left", padx=(0, 6))
         ttk.Button(db_row, text="Load DB File", command=self.load_db_file).pack(side="left")
 
-        credits = ttk.LabelFrame(content, text="Credits")
+        credits = ttk.LabelFrame(content, text="Info")
         credits.pack(anchor="nw", fill="x")
-        ttk.Label(credits, text=f"Developer: {DEVELOPER_NAME}").pack(anchor="w", padx=8, pady=(8, 2))
-        ttk.Label(credits, text=f"Tag: {DEVELOPER_TAG}").pack(anchor="w", padx=8, pady=2)
+        ttk.Label(credits, text=f"Tag: {DEVELOPER_TAG}").pack(anchor="w", padx=8, pady=(8, 2))
         ttk.Label(credits, text=f"Version: {APP_VERSION}").pack(anchor="w", padx=8, pady=(2, 8))
 
     # ------------------------------------------------------------------
     # Helpers for tabs
     # ------------------------------------------------------------------
 
+    def _register_drop_target(self, widget, block):
+        self.drop_blocks_by_widget[widget] = block
+
+    def _register_root_drop_target(self):
+        self.drop_manager.register(self.root)
+
+    def _poll_drop_queue(self):
+        try:
+            for files, point in self.drop_manager.pop_pending_drops():
+                log_debug(f"Polling queued drop: files={len(files)} point={point}")
+                widget = self.drop_manager.widget_for_drop_point(point)
+                self._handle_dropped_files(widget, files)
+        except Exception:
+            log_exception("Error while polling queued drops")
+
+        try:
+            if self.root.winfo_exists():
+                self.root.after(100, self._poll_drop_queue)
+        except Exception:
+            pass
+
+    def _queue_lookup_result(self, result):
+        with self.lookup_results_lock:
+            self.lookup_results.append(result)
+
+    def _pop_lookup_results(self):
+        with self.lookup_results_lock:
+            results = self.lookup_results[:]
+            self.lookup_results = []
+        return results
+
+    def _poll_lookup_results(self):
+        try:
+            for result in self._pop_lookup_results():
+                status = result.get("status")
+                if status == "ok":
+                    self._finish_lookup(result["rows"], result["inputs"], result.get("on_complete"))
+                else:
+                    self.set_status(f"Error: {result.get('error', 'lookup failed')}")
+        except Exception:
+            log_exception("Error while polling lookup results")
+
+        try:
+            if self.root.winfo_exists():
+                self.root.after(50, self._poll_lookup_results)
+        except Exception:
+            pass
+
     def _find_block_by_frame(self, frame):
         for b in self.switch_blocks + self.router_blocks:
             if b["frame"] is frame:
                 return b
         return None
+
+    def _current_device_block(self):
+        if not hasattr(self, "notebook"):
+            return None
+        try:
+            selected = self.notebook.nametowidget(self.notebook.select())
+        except Exception:
+            return None
+        return self._find_block_by_frame(selected)
+
+    def _read_text_file(self, path):
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+
+    def _set_block_source(self, block, source):
+        source_var = block.get("source_var")
+        if source_var is not None:
+            source_var.set(source or "No file loaded")
+
+    def _load_text_into_block(self, block, content, fallback="", source=""):
+        txt = block["txt"]
+        txt.delete("1.0", "end")
+        txt.insert("1.0", content)
+        self._prefill_hostname(block, content, fallback=fallback)
+        self._set_block_source(block, source)
+
+    def _schedule_auto_lookup(self, reason):
+        if not self.auto_lookup_after_drop.get():
+            return
+        if self.auto_lookup_pending:
+            return
+        self.auto_lookup_pending = True
+        log_debug(f"Scheduling auto lookup after {reason}")
+        self.root.after(100, self._run_scheduled_auto_lookup)
+
+    def _run_scheduled_auto_lookup(self):
+        self.auto_lookup_pending = False
+        self.lookup()
+
+    def _on_text_paste(self, event=None):
+        self.root.after(150, lambda: self._schedule_auto_lookup("paste"))
+
+    def _clear_tab(self, frame):
+        block = self._find_block_by_frame(frame)
+        if not block:
+            return
+        block["txt"].delete("1.0", "end")
+        block["host_var"].set(block.get("default_host", ""))
+        self._set_block_source(block, "No file loaded")
+        self.set_status(f"Cleared {block.get('default_host', 'tab')}")
+
+    def _classify_dropped_file(self, path, content):
+        name = Path(path).name.lower()
+        text = (content or "").lower()
+
+        if (
+            re.search(r"(^|[-_ .])arp([-_ .]|$)", name)
+            or "show ip arp" in text
+            or re.search(r"^\s*internet\s+\d{1,3}(?:\.\d{1,3}){3}\s+", text, re.M)
+        ):
+            return "arp"
+
+        if (
+            re.search(r"(^|[-_ .])mac([-_ .]|$)", name)
+            or "show mac address-table" in text
+            or "show mac-address-table" in text
+            or "mac address table" in text
+        ):
+            return "mac"
+
+        if parse_ios_arp_table(content):
+            return "arp"
+        if parse_ios_mac_table(content):
+            return "mac"
+
+        return ""
+
+    def _next_drop_block(self, blocks, used_block_ids):
+        for block in blocks:
+            if id(block) in used_block_ids:
+                continue
+            if not block["txt"].get("1.0", "end").strip():
+                return block
+        for block in blocks:
+            if id(block) not in used_block_ids:
+                return block
+        return blocks[0] if blocks else None
+
+    def _block_for_drop(self, source_widget, kind, used_block_ids):
+        direct_block = self._drop_block_for_widget(source_widget)
+        if direct_block:
+            return direct_block
+
+        if kind == "arp":
+            return self._next_drop_block(self.router_blocks, used_block_ids)
+        if kind == "mac":
+            return self._next_drop_block(self.switch_blocks, used_block_ids)
+
+        current = self._current_device_block()
+        if current:
+            return current
+        return None
+
+    def _drop_block_for_widget(self, widget):
+        current = widget
+        while current:
+            block = self.drop_blocks_by_widget.get(current)
+            if block:
+                return block
+            current = getattr(current, "master", None)
+        return None
+
+    def _handle_dropped_files(self, source_widget, paths):
+        log_debug(f"Handling dropped files: count={len(paths)} source_widget={source_widget}")
+        loaded = 0
+        failures = []
+        used_block_ids = set()
+
+        for path in paths:
+            log_debug(f"Processing dropped path: {path}")
+            if not os.path.isfile(path):
+                failures.append(f"{os.path.basename(path)}: not a file")
+                log_debug(f"Skipped dropped path, not a file: {path}")
+                continue
+
+            try:
+                content = self._read_text_file(path)
+            except Exception as e:
+                failures.append(f"{os.path.basename(path)}: {e}")
+                log_exception(f"Failed reading dropped file: {path}")
+                continue
+
+            kind = self._classify_dropped_file(path, content)
+            log_debug(f"Classified dropped file: {path} kind={kind or 'unknown'} size={len(content)}")
+            block = self._block_for_drop(source_widget, kind, used_block_ids)
+            if not block:
+                failures.append(f"{os.path.basename(path)}: no matching tab")
+                log_debug(f"No matching tab for dropped file: {path}")
+                continue
+
+            self._load_text_into_block(
+                block,
+                content,
+                fallback=Path(path).stem,
+                source=f"Loaded from file: {Path(path).name}",
+            )
+            log_debug(
+                "Loaded dropped file into "
+                f"{block.get('default_host', 'unknown')} tab; hostname={block['host_var'].get()}"
+            )
+            used_block_ids.add(id(block))
+            loaded += 1
+
+        if loaded:
+            self.set_status(f"Loaded {loaded} dropped file(s)")
+            log_debug(f"Drop handling loaded {loaded} file(s)")
+        if failures:
+            log_debug("Drop handling failures: " + "; ".join(failures))
+            messagebox.showwarning("Drag and Drop", "Some files were not loaded:\n\n" + "\n".join(failures))
+        if loaded:
+            self._schedule_auto_lookup("drop")
 
     def _can_replace_hostname(self, block):
         current = block["host_var"].get().strip()
@@ -929,10 +1639,8 @@ class App:
             clip = ""
         if not clip:
             return
-        txt = block["txt"]
-        txt.delete("1.0", "end")
-        txt.insert("1.0", clip)
-        self._prefill_hostname(block, clip)
+        self._load_text_into_block(block, clip, source="Loaded from clipboard")
+        self._schedule_auto_lookup("paste")
 
     def _load_file_into_tab(self, frame):
         block = self._find_block_by_frame(frame)
@@ -945,16 +1653,18 @@ class App:
         if not p:
             return
         try:
-            with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            content = self._read_text_file(p)
         except Exception as e:
             messagebox.showerror("Error", f"Could not read file:\n{e}")
             return
 
-        txt = block["txt"]
-        txt.delete("1.0", "end")
-        txt.insert("1.0", content)
-        self._prefill_hostname(block, content, fallback=Path(p).stem)
+        self._load_text_into_block(
+            block,
+            content,
+            fallback=Path(p).stem,
+            source=f"Loaded from file: {Path(p).name}",
+        )
+        self._schedule_auto_lookup("file load")
 
     # ------------------------------------------------------------------
     # Status handling
@@ -998,6 +1708,25 @@ class App:
             "only_ip": self.only_ip.get(),
         }
 
+    def _lookup_empty_status(self, inputs):
+        has_switch_data = any((item.get("text") or "").strip() for item in inputs["switch_inputs"])
+        has_router_data = any((item.get("text") or "").strip() for item in inputs["router_inputs"])
+
+        if has_router_data and not has_switch_data:
+            arp_entries = 0
+            for item in inputs["router_inputs"]:
+                if (item.get("text") or "").strip():
+                    arp_entries += len(parse_ios_arp_table(item.get("text") or ""))
+            if arp_entries:
+                entry_word = "entry" if arp_entries == 1 else "entries"
+                return f"Lookup complete: {arp_entries} ARP {entry_word} loaded; waiting for switch MAC table"
+            return "Lookup complete: ARP loaded; waiting for switch MAC table"
+        if has_switch_data and not has_router_data and inputs["only_ip"]:
+            return "MAC table loaded; waiting for ARP data"
+        if has_switch_data and has_router_data:
+            return "0 row(s) displayed with current filters"
+        return "Load a MAC table and ARP table to correlate"
+
     def lookup(self):
         self._run_lookup()
 
@@ -1005,6 +1734,13 @@ class App:
         # Correlate MAC tables with ARP tables across all devices.
         self._clear_results()
         inputs = self._collect_lookup_inputs()
+        loaded_switches = sum(1 for item in inputs["switch_inputs"] if (item.get("text") or "").strip())
+        loaded_routers = sum(1 for item in inputs["router_inputs"] if (item.get("text") or "").strip())
+        log_debug(
+            "Lookup requested: "
+            f"switch_inputs={loaded_switches} router_inputs={loaded_routers} "
+            f"only_ip={inputs['only_ip']}"
+        )
 
         self.set_status("Resolving MACs and correlating with ARP...")
 
@@ -1034,15 +1770,27 @@ class App:
                     return (sw or "", vlan_num, iface_sort_key(iface or ""))
 
                 rows.sort(key=sort_key)
+                log_debug(f"Lookup complete: rows={len(rows)}")
 
-                self.root.after(0, self._finish_lookup, rows, on_complete)
+                self._queue_lookup_result({
+                    "status": "ok",
+                    "rows": rows,
+                    "inputs": inputs,
+                    "on_complete": on_complete,
+                })
             except Exception as e:
-                self.root.after(0, lambda: self.set_status(f"Error: {e}"))
+                log_exception("Lookup failed")
+                self._queue_lookup_result({
+                    "status": "error",
+                    "error": str(e),
+                })
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _finish_lookup(self, rows, on_complete=None):
+    def _finish_lookup(self, rows, inputs, on_complete=None):
         self._populate_tree(rows)
+        if not rows:
+            self.set_status(self._lookup_empty_status(inputs))
         if on_complete:
             on_complete()
 
@@ -1053,6 +1801,40 @@ class App:
             self.tree.insert("", "end", values=r, tags=(tag,))
         self.set_status(f"{len(rows)} row(s) displayed")
 
+    def _sorted_export_rows(self):
+        # Sort by Switch (hostname), then Interface numerically.
+        return sorted(
+            self.last_rows,
+            key=lambda r: ((r[0] or ""), iface_sort_key(r[2] or ""))
+        )
+
+    def _safe_filename_part(self, value):
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", (value or "").strip())
+        cleaned = cleaned.strip("._-")
+        return cleaned or "switchport-results"
+
+    def _export_default_filename(self, extension):
+        switch_names = []
+        router_names = []
+        for row in self.last_rows:
+            sw = (row[0] or "").strip()
+            router = (row[6] or "").strip()
+            if sw and sw not in switch_names:
+                switch_names.append(sw)
+            if router and router not in router_names:
+                router_names.append(router)
+
+        names = switch_names or router_names
+        if not names:
+            base = "switchport-results"
+        elif len(names) == 1:
+            base = self._safe_filename_part(names[0])
+        else:
+            base = f"{self._safe_filename_part(names[0])}-plus-{len(names) - 1}"
+
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        return f"{base}-switchport-results-{timestamp}{extension}"
+
     def export_csv(self):
         self._run_lookup(on_complete=self._export_current_rows)
 
@@ -1062,35 +1844,57 @@ class App:
             messagebox.showinfo("Export CSV", "No data to export.")
             return
 
-        # Sort by Switch (hostname), then Interface numerically
-        rows = sorted(
-            self.last_rows,
-            key=lambda r: ((r[0] or ""), iface_sort_key(r[2] or ""))
-        )
+        rows = self._sorted_export_rows()
 
         p = filedialog.asksaveasfilename(
             title="Save CSV",
             defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=self._export_default_filename(".csv"),
         )
         if not p:
             return
         try:
             with open(p, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["Switch", "VLAN", "Interface", "MAC", "Vendor",
-                            "IP", "Router", "ARP_Interface"])
+                w.writerow(CSV_HEADERS)
                 for r in rows:
                     w.writerow(r)
             self.set_status(f"Exported {len(rows)} row(s) to {os.path.basename(p)}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export CSV:\n{e}")
 
+    def export_xlsx(self):
+        self._run_lookup(on_complete=self._export_current_rows_xlsx)
+
+    def _export_current_rows_xlsx(self):
+        if not self.last_rows:
+            messagebox.showinfo("Export Excel", "No data to export.")
+            return
+
+        rows = self._sorted_export_rows()
+
+        p = filedialog.asksaveasfilename(
+            title="Save Excel Workbook",
+            defaultextension=".xlsx",
+            filetypes=[("Excel workbooks", "*.xlsx"), ("All files", "*.*")],
+            initialfile=self._export_default_filename(".xlsx"),
+        )
+        if not p:
+            return
+
+        try:
+            write_xlsx_with_filters(p, rows)
+            self.set_status(f"Exported {len(rows)} row(s) to {os.path.basename(p)}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export Excel workbook:\n{e}")
+
     def clear_all(self):
         # Clear all text inputs and table.
         for b in self.switch_blocks + self.router_blocks:
             b["txt"].delete("1.0", "end")
             b["host_var"].set(b.get("default_host", ""))
+            self._set_block_source(b, "No file loaded")
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         self.last_rows = []
@@ -1143,10 +1947,15 @@ class App:
 # ---------------------------------------------------------------------------
 
 def main():
+    setup_crash_logging()
     root = tk.Tk()
     app = App(root)
     root.geometry("1200x800")
-    root.mainloop()
+    log_debug("Entering Tk mainloop")
+    try:
+        root.mainloop()
+    finally:
+        log_debug("Tk mainloop exited")
 
 
 if __name__ == "__main__":

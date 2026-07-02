@@ -1,0 +1,13 @@
+SAMPLE-SW01
+===== mac :: show mac address-table =====
+          Mac Address Table
+-------------------------------------------
+
+Vlan    Mac Address       Type        Ports
+----    -----------       --------    -----
+  10    aabb.ccdd.eeff    DYNAMIC     Gi1/0/1
+  20    1122.3344.5566    DYNAMIC     Gi1/0/2
+  30    7788.99aa.bbcc    DYNAMIC     Gi1/0/10
+  99    dead.beef.0001    DYNAMIC     Po1
+Total Mac Addresses for this criterion: 4
+!!

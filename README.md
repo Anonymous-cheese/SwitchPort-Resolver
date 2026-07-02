@@ -1,11 +1,26 @@
 # SwitchPort Resolver
 
-Version 2.2  
+Version 3.0
 
 A Windows-friendly GUI tool for **multi-device MAC table parsing, ARP correlation, and OUI vendor identification**.  
 Supports **5 Cisco switches** and **2 Cisco routers** simultaneously, with automatic hostname detection, offline/online vendor lookup, flexible MAC formatting, CSV export, and fast correlation of MAC → IP → Router.
 
 Designed for real-world Cisco troubleshooting environments and validated using IOS/IOS-XE outputs.
+
+---
+
+## Improvements in 3.0
+
+- Added Excel `.xlsx` export with filter/sort dropdowns on every column, with VLAN values written as numbers for proper sorting.
+- Added default hostname-based filenames for CSV and Excel exports while still allowing the filename to be edited.
+- Added Windows drag/drop loading for saved MAC table and ARP text files.
+- Added per-tab loaded-source labels and a **Clear Tab** button.
+- Moved router ARP tabs before switch tabs.
+- Added **Auto lookup after paste/load/drop** in Settings, including ARP-only lookup status showing loaded ARP entry counts.
+- Added sample MAC and ARP test files under `samples/`.
+- Added Desktop crash/debug logging to help diagnose future issues.
+- Removed the visible developer line from Settings while keeping the tag and version.
+- Kept Excel export dependency-free for end users by using standard-library `.xlsx` generation inside the bundled exe.
 
 ---
 
@@ -43,7 +58,7 @@ Designed for real-world Cisco troubleshooting environments and validated using I
 - Clean, simple Tkinter interface  
 - Starts in dark mode, with the toggle available in Settings
 - Tabs for all 7 devices, plus a Settings tab for occasional vendor DB actions
-- Settings includes developer credits, tag, and app version
+- Settings includes tag and app version
 - Paste/output directly or load text files from SecureCRT, PuTTY, etc.
 
 ### Filters & Options  

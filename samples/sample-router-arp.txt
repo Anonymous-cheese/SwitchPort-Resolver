@@ -1,0 +1,7 @@
+SAMPLE-RT01
+===== arp :: show ip arp =====
+Protocol  Address          Age (min)  Hardware Addr   Type   Interface
+Internet  10.10.10.25             4   aabb.ccdd.eeff  ARPA   Vlan10
+Internet  10.20.20.25             2   1122.3344.5566  ARPA   Vlan20
+Internet  10.30.30.25             7   7788.99aa.bbcc  ARPA   Vlan30
+!!
