@@ -22,7 +22,7 @@ MANUF_URL = "https://www.wireshark.org/download/automated/data/manuf"
 CACHE_DIR = os.path.join(Path.home(), ".oui_lookup")
 CACHE_FILE = os.path.join(CACHE_DIR, "manuf")
 APP_NAME = "SwitchPort Resolver"
-APP_VERSION = "3.0"
+APP_VERSION = "3.0.1"
 DEVELOPER_TAG = "746f617374"
 RESULT_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP Interface")
 CSV_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP_Interface")
@@ -658,6 +658,22 @@ def write_xlsx_with_filters(path: str, rows, headers=RESULT_HEADERS):
         zf.writestr("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels_xml)
         zf.writestr("xl/tables/table1.xml", table_xml)
         zf.writestr("xl/styles.xml", styles_xml)
+
+
+def prepare_xlsx_export(rows):
+    # Keep MAC-only exports focused on the columns that contain useful data.
+    # This also ensures Excel's table/filter range does not extend across three
+    # completely empty ARP columns when no router input was supplied.
+    has_arp_data = any(
+        any(str(row[index] or "").strip() for index in (5, 6, 7))
+        for row in rows
+    )
+    if has_arp_data:
+        return tuple(RESULT_HEADERS), list(rows)
+
+    headers = tuple(RESULT_HEADERS[:5])
+    export_rows = [tuple(row[:5]) for row in rows]
+    return headers, export_rows
 
 
 # ---------------------------------------------------------------------------
@@ -1873,6 +1889,7 @@ class App:
             return
 
         rows = self._sorted_export_rows()
+        headers, export_rows = prepare_xlsx_export(rows)
 
         p = filedialog.asksaveasfilename(
             title="Save Excel Workbook",
@@ -1884,8 +1901,8 @@ class App:
             return
 
         try:
-            write_xlsx_with_filters(p, rows)
-            self.set_status(f"Exported {len(rows)} row(s) to {os.path.basename(p)}")
+            write_xlsx_with_filters(p, export_rows, headers=headers)
+            self.set_status(f"Exported {len(export_rows)} row(s) to {os.path.basename(p)}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export Excel workbook:\n{e}")
 
