@@ -22,7 +22,7 @@ MANUF_URL = "https://www.wireshark.org/download/automated/data/manuf"
 CACHE_DIR = os.path.join(Path.home(), ".oui_lookup")
 CACHE_FILE = os.path.join(CACHE_DIR, "manuf")
 APP_NAME = "SwitchPort Resolver"
-APP_VERSION = "3.0.1"
+APP_VERSION = "3.0.2"
 DEVELOPER_TAG = "746f617374"
 RESULT_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP Interface")
 CSV_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP_Interface")
@@ -1063,9 +1063,22 @@ class App:
         ttk.Button(opt_row, text="Export Excel", command=self.export_xlsx).pack(side="left", padx=2)
         ttk.Button(opt_row, text="Clear All", command=self.clear_all).pack(side="left", padx=(12, 0))
 
+        # Draggable vertical splitter between device input and lookup results.
+        self.main_splitter = tk.PanedWindow(
+            main,
+            orient=tk.VERTICAL,
+            sashwidth=9,
+            sashrelief=tk.RAISED,
+            showhandle=True,
+            handlesize=12,
+            handlepad=24,
+            opaqueresize=True,
+            borderwidth=0,
+        )
+        self.main_splitter.pack(fill="both", expand=True, pady=(4, 0))
+
         # Notebook with device tabs and occasional settings.
-        nb = ttk.Notebook(main)
-        nb.pack(fill="both", expand=True, pady=(4, 6))
+        nb = ttk.Notebook(self.main_splitter)
         self.notebook = nb
 
         self.switch_blocks = []
@@ -1088,8 +1101,7 @@ class App:
         self._build_settings_tab(settings_frame)
 
         # Result table
-        tree_frame = ttk.Frame(main)
-        tree_frame.pack(fill="both", expand=True)
+        tree_frame = ttk.Frame(self.main_splitter)
 
         columns = ("switch", "vlan", "iface", "mac", "vendor", "ip", "router", "arp_iface")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=12)
@@ -1121,6 +1133,9 @@ class App:
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
 
+        self.main_splitter.add(nb, minsize=150, stretch="always")
+        self.main_splitter.add(tree_frame, minsize=120, stretch="always")
+
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
         status = ttk.Label(main, textvariable=self.status_var, anchor="w")
@@ -1129,7 +1144,18 @@ class App:
         self._register_root_drop_target()
         self._poll_drop_queue()
         self._poll_lookup_results()
+        self.root.after_idle(self._set_initial_splitter_position)
         log_debug("App initialization complete")
+
+    def _set_initial_splitter_position(self):
+        # Start close to an even split while leaving the sash fully user-controlled.
+        try:
+            self.root.update_idletasks()
+            height = self.main_splitter.winfo_height()
+            if height > 1:
+                self.main_splitter.sash_place(0, 0, int(height * 0.52))
+        except (tk.TclError, IndexError):
+            pass
 
     def _report_callback_exception(self, exc_type, exc_value, exc_tb):
         log_exception("Unhandled Tk callback exception", exc_type, exc_value, exc_tb)
@@ -1162,6 +1188,12 @@ class App:
         self.root.option_add("*TCombobox*Listbox.foreground", palette["fg"])
         self.root.option_add("*TCombobox*Listbox.selectBackground", palette["select_bg"])
         self.root.option_add("*TCombobox*Listbox.selectForeground", palette["select_fg"])
+
+        if hasattr(self, "main_splitter"):
+            self.main_splitter.configure(
+                background=palette["border"],
+                sashrelief=tk.RAISED,
+            )
 
         self._style_configure(
             ".",
