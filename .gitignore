@@ -1,7 +1,0 @@
-__pycache__/
-*.pyc
-build/
-build-preview/
-dist-preview/
-build-preview-visual/
-dist-preview-visual/

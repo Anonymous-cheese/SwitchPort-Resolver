@@ -8,16 +8,8 @@ import zipfile
 import time
 import traceback
 import faulthandler
-import platform
 from pathlib import Path
 from xml.sax.saxutils import escape
-from tools_ui import NetworkToolsView, Tooltip, WORKSPACE_TOP_GAP
-from resolver_workflow import (build_input_report, filter_sort_rows, is_current_lookup_result,
-                               read_session, write_session)
-from app_preferences import (
-    COLOR_LABELS, MAC_FORMATS, THEMES, default_preferences, effective_palette,
-    load_preferences, normalize_color, save_preferences, contrast_ratio,
-)
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -30,11 +22,11 @@ MANUF_URL = "https://www.wireshark.org/download/automated/data/manuf"
 CACHE_DIR = os.path.join(Path.home(), ".oui_lookup")
 CACHE_FILE = os.path.join(CACHE_DIR, "manuf")
 APP_NAME = "SwitchPort Resolver"
-APP_VERSION = "4.1.0"
+APP_VERSION = "3.0.2"
 DEVELOPER_TAG = "746f617374"
 RESULT_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP Interface")
 CSV_HEADERS = ("Switch", "VLAN", "Interface", "MAC", "Vendor", "IP", "Router", "ARP_Interface")
-CRASH_LOG_NAME = "switchport-resolver.log"
+CRASH_LOG_NAME = "SwitchPort Resolver Crash Log.txt"
 
 # ---------------------------------------------------------------------------
 # Crash/debug logging
@@ -92,46 +84,13 @@ def desktop_path():
 
 
 def crash_log_path():
-    base = os.environ.get("LOCALAPPDATA") or os.path.join(Path.home(), ".local", "share")
-    return os.path.join(base, "SwitchPort Resolver", "Logs", CRASH_LOG_NAME)
-
-
-def set_windows_titlebar_theme(root, dark):
-    """Use the OS-supported dark caption when available; silently fall back."""
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-        root.update_idletasks()
-        get_parent = ctypes.windll.user32.GetParent
-        get_parent.argtypes = [ctypes.c_void_p]
-        get_parent.restype = ctypes.c_void_p
-        hwnd = get_parent(root.winfo_id()) or root.winfo_id()
-        value = ctypes.c_int(int(bool(dark)))
-        set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
-        set_attribute.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
-        set_attribute.restype = ctypes.c_int
-        for attribute in (20, 19):
-            if set_attribute(
-                    hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)) == 0:
-                break
-    except Exception:
-        pass
-
-
-def _prepare_log():
-    path = crash_log_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if os.path.isfile(path) and os.path.getsize(path) > 2_000_000:
-        os.replace(path, path + ".previous")
-    return path
+    return os.path.join(desktop_path(), CRASH_LOG_NAME)
 
 
 def log_debug(message):
     try:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         path = crash_log_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8", errors="ignore") as f:
             f.write(f"[{timestamp}] {message}\n")
     except Exception:
@@ -141,22 +100,17 @@ def log_debug(message):
 def log_exception(prefix, exc_type=None, exc_value=None, exc_tb=None):
     if exc_type is None:
         exc_type, exc_value, exc_tb = sys.exc_info()
-    # Exception messages may contain input snippets or user file paths.
-    details = f"{getattr(exc_type, '__name__', 'UnknownError')}\n" + "".join(traceback.format_tb(exc_tb))
+    details = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
     log_debug(f"{prefix}\n{details}")
 
 
 def setup_crash_logging():
     global _LOG_FILE_HANDLE
 
-    try:
-        _prepare_log()
-    except OSError:
-        pass
-
     log_debug("")
     log_debug("=" * 80)
     log_debug(f"{APP_NAME} {APP_VERSION} starting")
+    log_debug(f"Executable: {sys.executable}")
     log_debug(f"Frozen: {bool(getattr(sys, 'frozen', False))}")
     log_debug(f"Python: {sys.version}")
     log_debug(f"Platform: {sys.platform}")
@@ -883,7 +837,7 @@ class WindowsFileDropManager:
             buf = self.ctypes.create_unicode_buffer(length + 1)
             self.shell32.DragQueryFileW(hdrop, index, buf, length + 1)
             files.append(buf.value)
-            log_debug(f"Dropped file[{index}] received")
+            log_debug(f"Dropped file[{index}]: {buf.value}")
         return files, point
 
     def pop_pending_drops(self):
@@ -987,6 +941,46 @@ def correlate_mac_and_arp(
     return results
 
 
+THEMES = {
+    "light": {
+        "bg": "#f0f0f0",
+        "panel_bg": "#f0f0f0",
+        "fg": "#000000",
+        "muted_fg": "#333333",
+        "entry_bg": "#ffffff",
+        "button_bg": "#f5f5f5",
+        "button_active": "#e5e5e5",
+        "button_pressed": "#d9d9d9",
+        "border": "#b8b8b8",
+        "tree_bg": "#ffffff",
+        "tree_alt": "#f7f7f7",
+        "heading_bg": "#eeeeee",
+        "select_bg": "#0078d7",
+        "select_fg": "#ffffff",
+        "disabled_fg": "#6f6f6f",
+        "insert": "#000000",
+    },
+    "dark": {
+        "bg": "#1f2227",
+        "panel_bg": "#252a31",
+        "fg": "#f1f5f9",
+        "muted_fg": "#cbd5e1",
+        "entry_bg": "#111827",
+        "button_bg": "#303741",
+        "button_active": "#3b4450",
+        "button_pressed": "#46515f",
+        "border": "#46515f",
+        "tree_bg": "#151a20",
+        "tree_alt": "#1d232b",
+        "heading_bg": "#2b323b",
+        "select_bg": "#0f766e",
+        "select_fg": "#ffffff",
+        "disabled_fg": "#8b95a3",
+        "insert": "#f8fafc",
+    },
+}
+
+
 # ---------------------------------------------------------------------------
 # GUI application
 # ---------------------------------------------------------------------------
@@ -995,7 +989,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.report_callback_exception = self._report_callback_exception
-        self.root.title(f"{APP_NAME} — {APP_VERSION}")
+        self.root.title(APP_NAME)
         log_debug("App initialization started")
         icon_path = get_bundled_path("icon.ico")
         if os.path.isfile(icon_path):
@@ -1019,71 +1013,59 @@ class App:
         self.drop_manager = WindowsFileDropManager(root, self._handle_dropped_files)
         self.lookup_results = []
         self.lookup_results_lock = threading.Lock()
-        self.lookup_generation = 0
-        self.input_report = None
-        self.undo_snapshot = None
-        self.last_error_type = "None"
-        self.preferences = load_preferences()
-        window = self.preferences["window"]
-        geometry = f"{window['width']}x{window['height']}"
-        if window["x"] is not None and window["y"] is not None:
-            geometry += f"{window['x']:+d}{window['y']:+d}"
-        self.root.geometry(geometry)
-        options = self.preferences["options"]
-        self.auto_lookup_after_drop = tk.BooleanVar(value=options["auto_lookup_after_drop"])
+        self.auto_lookup_after_drop = tk.BooleanVar(value=True)
         self.auto_lookup_pending = False
-        self.dark_mode = tk.BooleanVar(value=options["dark_mode"])
-        self.mac_fmt = tk.StringVar(value=options["mac_fmt"])
-        self.exclude_po = tk.BooleanVar(value=options["exclude_po"])
-        self.exclude_cpu = tk.BooleanVar(value=options["exclude_cpu"])
-        self.only_ip = tk.BooleanVar(value=options["only_ip"])
-        for key in options:
-            getattr(self, key).trace_add("write", self._save_current_preferences)
-        self.status_var = tk.StringVar(value="Ready")
-        self.current_workspace = None
-        self.previous_workspace = "resolver"
+        self.dark_mode = tk.BooleanVar(value=True)
 
         main = ttk.Frame(root)
         main.pack(fill="both", expand=True, padx=10, pady=10)
 
-        appbar = ttk.Frame(main)
-        appbar.pack(fill="x", pady=(0, 8))
-        ttk.Label(appbar, text="SWITCHPORT RESOLVER", style="Brand.TLabel").pack(side="left", padx=(2, 20))
-        self.resolver_nav = ttk.Button(appbar, text="▦  Resolver", command=lambda: self._show_workspace("resolver"))
-        self.resolver_nav.pack(side="left", padx=(0, 4))
-        self.tools_nav = ttk.Button(appbar, text="⌘  Tools", command=lambda: self._show_workspace("tools"))
-        self.tools_nav.pack(side="left")
-        self.settings_nav = ttk.Button(appbar, text="⚙  Settings", command=self._open_settings)
-        self.settings_nav.pack(side="right", padx=(8, 0))
-        Tooltip(self.settings_nav, "Open settings inside the app", self._palette)
-        self.export_button = ttk.Button(appbar, text="Export ▾", command=self._show_export_menu)
-        self.export_button.pack(side="right", padx=(0, 6))
-        Tooltip(self.export_button, "Export current results as CSV or Excel", self._palette)
-        self.lookup_button = ttk.Button(appbar, text="⌕  Lookup", command=self.lookup, style="Accent.TButton")
-        self.lookup_button.pack(side="right", padx=(0, 6))
-        Tooltip(self.lookup_button, "Correlate loaded switch MAC and router ARP tables", self._palette)
-        self.clear_all_button = ttk.Button(appbar, text="Clear All", command=self.clear_all)
-        self.clear_all_button.pack(side="right", padx=(0, 6))
-        Tooltip(self.clear_all_button, "Clear all device inputs and results", self._palette)
-        self.session_button = ttk.Button(appbar, text="Session ▾", command=self._show_session_menu)
-        self.session_button.pack(side="right", padx=(0, 6))
-        Tooltip(self.session_button, "Open or save an explicit session; raw inputs are never auto-saved", self._palette)
-        self.session_menu = tk.Menu(root, tearoff=False)
-        self.session_menu.add_command(label="Open Session…", command=self.open_session)
-        self.session_menu.add_command(label="Save Session…", command=self.save_session)
-        self.session_menu.add_separator()
-        self.session_menu.add_command(label="Undo Clear All", command=self.undo_clear_all)
-        self.export_menu = tk.Menu(root, tearoff=False)
-        self.export_menu.add_command(label="Export CSV", command=self.export_csv)
-        self.export_menu.add_command(label="Export Excel", command=self.export_xlsx)
+        # Top options row
+        opt_row = ttk.Frame(main)
+        opt_row.pack(fill="x", pady=(0, 6))
 
-        self.workspace = ttk.Frame(main)
-        self.workspace.pack(fill="both", expand=True)
-        self.resolver_workspace = ttk.Frame(self.workspace)
+        ttk.Label(opt_row, text="MAC Format:").pack(side="left")
+        self.mac_fmt = tk.StringVar(value="AA:BB:CC:DD:EE:FF")
+        fmt_box = ttk.Combobox(
+            opt_row,
+            textvariable=self.mac_fmt,
+            values=["As seen", "AA:BB:CC:DD:EE:FF", "AAAA.BBBB.CCCC"],
+            state="readonly",
+            width=20,
+        )
+        fmt_box.pack(side="left", padx=(4, 12))
+
+        self.exclude_po = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            opt_row,
+            text="Exclude Port-Channels (Po*)",
+            variable=self.exclude_po
+        ).pack(side="left")
+
+        self.exclude_cpu = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            opt_row,
+            text="Exclude CPU MACs",
+            variable=self.exclude_cpu
+        ).pack(side="left", padx=(8, 0))
+
+        self.only_ip = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opt_row,
+            text="Only rows with IP match",
+            variable=self.only_ip
+        ).pack(side="left", padx=(8, 0))
+
+        ttk.Label(opt_row, text=" ").pack(side="left", padx=4)  # spacer
+
+        ttk.Button(opt_row, text="Lookup", command=self.lookup).pack(side="left", padx=(4, 2))
+        ttk.Button(opt_row, text="Export CSV", command=self.export_csv).pack(side="left", padx=2)
+        ttk.Button(opt_row, text="Export Excel", command=self.export_xlsx).pack(side="left", padx=2)
+        ttk.Button(opt_row, text="Clear All", command=self.clear_all).pack(side="left", padx=(12, 0))
 
         # Draggable vertical splitter between device input and lookup results.
         self.main_splitter = tk.PanedWindow(
-            self.resolver_workspace,
+            main,
             orient=tk.VERTICAL,
             sashwidth=9,
             sashrelief=tk.RAISED,
@@ -1093,9 +1075,9 @@ class App:
             opaqueresize=True,
             borderwidth=0,
         )
-        self.main_splitter.pack(fill="both", expand=True, pady=(WORKSPACE_TOP_GAP, 0))
+        self.main_splitter.pack(fill="both", expand=True, pady=(4, 0))
 
-        # Notebook with device tabs.
+        # Notebook with device tabs and occasional settings.
         nb = ttk.Notebook(self.main_splitter)
         self.notebook = nb
 
@@ -1114,40 +1096,27 @@ class App:
             block = self._build_device_tab(frame, is_router=False, index=i)
             self.switch_blocks.append(block)
 
+        settings_frame = ttk.Frame(nb)
+        nb.add(settings_frame, text="Settings")
+        self._build_settings_tab(settings_frame)
+
         # Result table
         tree_frame = ttk.Frame(self.main_splitter)
 
         columns = ("switch", "vlan", "iface", "mac", "vendor", "ip", "router", "arp_iface")
-        self.result_sort_column = "switch"
-        self.result_sort_descending = False
-        self.result_query = tk.StringVar()
-        self.result_ip_filter = tk.StringVar(value="All rows")
-        self.visible_rows = []
-        result_controls = ttk.Frame(tree_frame)
-        result_controls.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(2, 4))
-        ttk.Label(result_controls, text="Find in results").pack(side="left", padx=(0, 6))
-        search = ttk.Entry(result_controls, textvariable=self.result_query, width=25)
-        self.result_search = search
-        search.pack(side="left", padx=(0, 8))
-        search.bind("<Escape>", lambda _event: self._clear_result_filters())
-        Tooltip(search, "Search across every result column (Ctrl+F)", self._palette)
-        ttk.Combobox(result_controls, textvariable=self.result_ip_filter,
-                     values=("All rows", "Has IP", "No IP"), state="readonly",
-                     width=11).pack(side="left", padx=(0, 8))
-        ttk.Button(result_controls, text="Clear filters", command=self._clear_result_filters).pack(side="left")
-        ttk.Button(result_controls, text="Input report", command=self._toggle_input_report).pack(side="right")
-        self.result_count_var = tk.StringVar(value="0 results")
-        ttk.Label(result_controls, textvariable=self.result_count_var, style="Muted.TLabel").pack(
-            side="right", padx=(0, 12))
-        self.result_query.trace_add("write", lambda *_: self._refresh_result_view())
-        self.result_ip_filter.trace_add("write", lambda *_: self._refresh_result_view())
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=12)
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        self.result_headings = dict(zip(columns, RESULT_HEADERS))
-        self._update_result_headings()
+        self.tree.heading("switch", text="Switch")
+        self.tree.heading("vlan", text="VLAN")
+        self.tree.heading("iface", text="Interface")
+        self.tree.heading("mac", text="MAC")
+        self.tree.heading("vendor", text="Vendor")
+        self.tree.heading("ip", text="IP")
+        self.tree.heading("router", text="Router")
+        self.tree.heading("arp_iface", text="ARP Interface")
 
         self.tree.column("switch", width=140, anchor="w")
         self.tree.column("vlan", width=60, anchor="center")
@@ -1158,114 +1127,25 @@ class App:
         self.tree.column("router", width=140, anchor="w")
         self.tree.column("arp_iface", width=120, anchor="w")
 
-        self.tree.grid(row=1, column=0, sticky="nsew")
-        vsb.grid(row=1, column=1, sticky="ns")
-        hsb.grid(row=2, column=0, sticky="ew")
-        self.report_frame = ttk.LabelFrame(tree_frame, text="Input report")
-        self.report_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        self.report_text = tk.Text(self.report_frame, height=6, wrap="word", state="disabled")
-        self.report_text.pack(fill="x", padx=6, pady=6)
-        self.report_frame.grid_remove()
-        tree_frame.rowconfigure(1, weight=1)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
 
         self.main_splitter.add(nb, minsize=150, stretch="always")
         self.main_splitter.add(tree_frame, minsize=120, stretch="always")
 
-        self.tools_workspace = NetworkToolsView(
-            self.workspace,
-            lambda mac: lookup_vendor(mac, self.buckets, self.masks),
-            self.set_status,
-            self._palette,
-        )
-        self.settings_workspace = ttk.Frame(self.workspace)
-        self._build_settings_tab(self.settings_workspace)
-        self._show_workspace("resolver")
-
         # Status bar
+        self.status_var = tk.StringVar(value="Ready")
         status = ttk.Label(main, textvariable=self.status_var, anchor="w")
         status.pack(fill="x", pady=(4, 0))
         self._apply_theme()
         self._register_root_drop_target()
         self._poll_drop_queue()
         self._poll_lookup_results()
-        self._bind_shortcuts()
-        self.root.protocol("WM_DELETE_WINDOW", self._close_app)
-        self.main_splitter.bind("<ButtonRelease-1>", self._remember_splitter)
         self.root.after_idle(self._set_initial_splitter_position)
         log_debug("App initialization complete")
-
-    def _bind_shortcuts(self):
-        self.root.bind_all("<Control-l>", lambda _event: self.lookup()
-                           if self.current_workspace == "resolver" else None)
-        self.root.bind_all("<Control-t>", lambda _event: self._show_workspace("tools"))
-        self.root.bind_all("<Control-e>", lambda _event: self._show_export_menu()
-                           if self.current_workspace == "resolver" else None)
-        self.root.bind_all("<Control-comma>", lambda _event: self._open_settings())
-        self.root.bind_all("<Control-Shift-V>", lambda _event: self._paste_current_tab())
-        self.root.bind_all("<Control-f>", self._focus_result_search)
-        self.root.bind_all("<Control-s>", lambda _event: self.save_session()
-                           if self.current_workspace == "resolver" else None)
-        self.root.bind_all("<Control-o>", lambda _event: self.open_session()
-                           if self.current_workspace == "resolver" else None)
-
-    def _focus_result_search(self, _event=None):
-        if self.current_workspace == "resolver":
-            self.result_search.focus_set()
-            self.result_search.select_range(0, "end")
-
-    def _paste_current_tab(self):
-        if self.resolver_workspace.winfo_ismapped():
-            self._paste_into_tab(self.notebook.nametowidget(self.notebook.select()))
-
-    def _show_workspace(self, name):
-        self.resolver_workspace.pack_forget()
-        self.tools_workspace.pack_forget()
-        self.settings_workspace.pack_forget()
-        self.current_workspace = name
-        self.resolver_nav.configure(style="NavSelected.TButton" if name == "resolver" else "TButton")
-        self.tools_nav.configure(style="NavSelected.TButton" if name == "tools" else "TButton")
-        self.settings_nav.configure(style="NavSelected.TButton" if name == "settings" else "TButton")
-        self.export_button.pack_forget()
-        self.lookup_button.pack_forget()
-        self.clear_all_button.pack_forget()
-        self.session_button.pack_forget()
-        if name == "resolver":
-            self.session_button.pack(side="right", padx=(0, 6))
-            self.export_button.pack(side="right", padx=(0, 6))
-            self.lookup_button.pack(side="right", padx=(0, 6))
-            self.clear_all_button.pack(side="right", padx=(0, 6))
-        if name == "tools":
-            self.tools_workspace.pack(fill="both", expand=True)
-            self.set_status("Network tools ready")
-        elif name == "settings":
-            self.settings_workspace.pack(fill="both", expand=True)
-            self.set_status("Settings")
-        else:
-            self.resolver_workspace.pack(fill="both", expand=True)
-            self.set_status(f"{len(self.visible_rows)} of {len(self.last_rows)} row(s) displayed" if self.last_rows else "Ready")
-
-    def _show_export_menu(self):
-        self.export_menu.tk_popup(
-            self.export_button.winfo_rootx(),
-            self.export_button.winfo_rooty() + self.export_button.winfo_height(),
-        )
-
-    def _show_session_menu(self):
-        self.session_menu.tk_popup(
-            self.session_button.winfo_rootx(),
-            self.session_button.winfo_rooty() + self.session_button.winfo_height(),
-        )
-
-    def _open_settings(self):
-        if self.current_workspace == "settings":
-            self._close_settings()
-        else:
-            self.previous_workspace = self.current_workspace or "resolver"
-            self._show_workspace("settings")
-
-    def _close_settings(self):
-        self._show_workspace(self.previous_workspace)
 
     def _set_initial_splitter_position(self):
         # Start close to an even split while leaving the sash fully user-controlled.
@@ -1273,36 +1153,14 @@ class App:
             self.root.update_idletasks()
             height = self.main_splitter.winfo_height()
             if height > 1:
-                self.main_splitter.sash_place(0, 0, int(height * self.preferences["window"]["split_ratio"]))
+                self.main_splitter.sash_place(0, 0, int(height * 0.52))
         except (tk.TclError, IndexError):
             pass
-
-    def _remember_splitter(self, _event=None):
-        try:
-            height = self.main_splitter.winfo_height()
-            if height > 1:
-                ratio = self.main_splitter.sash_coord(0)[1] / height
-                if 0.15 <= ratio <= 0.85:
-                    self.preferences["window"]["split_ratio"] = round(ratio, 3)
-                    self._save_current_preferences()
-        except (tk.TclError, IndexError):
-            pass
-
-    def _close_app(self):
-        try:
-            if self.root.state() == "normal":
-                window = self.preferences["window"]
-                window.update(width=self.root.winfo_width(), height=self.root.winfo_height(),
-                              x=self.root.winfo_x(), y=self.root.winfo_y())
-            self._save_current_preferences()
-        finally:
-            self.root.destroy()
 
     def _report_callback_exception(self, exc_type, exc_value, exc_tb):
-        self.last_error_type = exc_type.__name__
         log_exception("Unhandled Tk callback exception", exc_type, exc_value, exc_tb)
         try:
-            messagebox.showerror("Error", f"Unexpected {exc_type.__name__}.\n\nOpen Settings → Team support for a sanitized diagnostic summary or local logs.")
+            messagebox.showerror("Error", f"Unexpected error:\n{exc_value}\n\nDetails were written to:\n{crash_log_path()}")
         except Exception:
             pass
 
@@ -1322,40 +1180,14 @@ class App:
         except tk.TclError:
             pass
 
-    def _palette(self):
-        return effective_palette(self.preferences, "dark" if self.dark_mode.get() else "light")
-
-    def _save_current_preferences(self, *_args):
-        if getattr(self, "_suspend_settings_save", False):
-            return
-        for key in self.preferences["options"]:
-            self.preferences["options"][key] = getattr(self, key).get()
-        try:
-            save_preferences(self.preferences)
-        except OSError as exc:
-            self.set_status(f"Could not save settings: {exc}")
-
     def _apply_theme(self):
-        palette = self._palette()
+        palette = THEMES["dark"] if self.dark_mode.get() else THEMES["light"]
 
         self.root.configure(bg=palette["bg"])
-        set_windows_titlebar_theme(self.root, self.dark_mode.get())
         self.root.option_add("*TCombobox*Listbox.background", palette["entry_bg"])
         self.root.option_add("*TCombobox*Listbox.foreground", palette["fg"])
         self.root.option_add("*TCombobox*Listbox.selectBackground", palette["select_bg"])
         self.root.option_add("*TCombobox*Listbox.selectForeground", palette["select_fg"])
-
-        if hasattr(self, "tools_workspace"):
-            self.tools_workspace.apply_theme(palette)
-        if hasattr(self, "export_menu"):
-            self.export_menu.configure(
-                background=palette["panel_bg"], foreground=palette["fg"],
-                activebackground=palette["select_bg"], activeforeground=palette["select_fg"],
-            )
-            self.session_menu.configure(
-                background=palette["panel_bg"], foreground=palette["fg"],
-                activebackground=palette["select_bg"], activeforeground=palette["select_fg"],
-            )
 
         if hasattr(self, "main_splitter"):
             self.main_splitter.configure(
@@ -1375,32 +1207,6 @@ class App:
         )
         self._style_configure("TFrame", background=palette["bg"])
         self._style_configure("TLabel", background=palette["bg"], foreground=palette["fg"])
-        self._style_configure("Brand.TLabel", background=palette["bg"], foreground=palette["fg"], font=("Segoe UI Semibold", 14))
-        self._style_configure("Muted.TLabel", background=palette["bg"], foreground=palette["muted_fg"])
-        self._style_configure("Value.TLabel", background=palette["bg"], foreground=palette["fg"], font=("Segoe UI Semibold", 10))
-        self._style_configure("Mono.TLabel", background=palette["bg"], foreground=palette["fg"], font=("Consolas", 10))
-        self._style_configure("Error.TLabel", background=palette["bg"], foreground=palette["error_fg"])
-        # Tools is a single inset work surface, using the same dark-blue color
-        # role as Resolver's text inputs rather than the outer window gray.
-        tools_surface = palette["entry_bg"]
-        self._style_configure("ToolsSurface.TFrame", background=tools_surface)
-        self._style_configure("ToolsSurface.TNotebook", background=tools_surface,
-                              bordercolor=palette["border"])
-        self._style_configure("ToolsSurface.TLabelframe", background=tools_surface,
-                              foreground=palette["fg"], bordercolor=palette["border"],
-                              relief="solid")
-        self._style_configure("ToolsSurface.TLabelframe.Label", background=tools_surface,
-                              foreground=palette["fg"])
-        self._style_configure("ToolsSurface.TLabel", background=tools_surface,
-                              foreground=palette["fg"])
-        self._style_configure("ToolsMuted.TLabel", background=tools_surface,
-                              foreground=palette["muted_fg"])
-        self._style_configure("ToolsValue.TLabel", background=tools_surface,
-                              foreground=palette["fg"], font=("Segoe UI Semibold", 10))
-        self._style_configure("ToolsMono.TLabel", background=tools_surface,
-                              foreground=palette["fg"], font=("Consolas", 10))
-        self._style_configure("ToolsError.TLabel", background=tools_surface,
-                              foreground=palette["error_fg"])
         self._style_configure(
             "TLabelframe",
             background=palette["bg"],
@@ -1440,10 +1246,6 @@ class App:
             ],
             foreground=[("disabled", palette["disabled_fg"])],
         )
-        self._style_configure("Accent.TButton", background=palette["select_bg"], foreground=palette["select_fg"], padding=(11, 5))
-        self._style_map("Accent.TButton", background=[("active", palette["button_active"]), ("pressed", palette["button_pressed"])])
-        self._style_configure("NavSelected.TButton", background=palette["select_bg"], foreground=palette["select_fg"], padding=(11, 5))
-        self._style_configure("Compact.TButton", background=palette["button_bg"], foreground=palette["fg"], padding=(6, 1))
         self._style_configure(
             "TEntry",
             fieldbackground=palette["entry_bg"],
@@ -1535,12 +1337,6 @@ class App:
                 relief="solid",
                 borderwidth=1,
             )
-        if hasattr(self, "report_text"):
-            self.report_text.configure(background=palette["entry_bg"], foreground=palette["fg"],
-                                       selectbackground=palette["select_bg"],
-                                       selectforeground=palette["select_fg"],
-                                       highlightbackground=palette["border"],
-                                       relief="flat")
 
         if hasattr(self, "tree"):
             self.tree.tag_configure("evenrow", background=palette["tree_bg"], foreground=palette["fg"])
@@ -1618,207 +1414,34 @@ class App:
         return block
 
     def _build_settings_tab(self, frame):
-        content = ttk.Frame(frame, padding=12)
-        content.pack(fill="both", expand=True)
-        tabs = ttk.Notebook(content)
-        tabs.pack(fill="both", expand=True)
-        general = ttk.Frame(tabs, padding=12)
-        colors = ttk.Frame(tabs, padding=12)
-        tabs.add(general, text="General")
-        tabs.add(colors, text="Colors")
+        content = ttk.Frame(frame)
+        content.pack(anchor="nw", fill="x", padx=8, pady=8)
 
-        resolver = ttk.LabelFrame(general, text="Resolver", padding=12)
-        resolver.pack(fill="x", pady=(0, 12))
-        row = ttk.Frame(resolver)
-        row.pack(fill="x", pady=(0, 8))
-        ttk.Label(row, text="MAC format:").pack(side="left", padx=(0, 8))
-        ttk.Combobox(row, textvariable=self.mac_fmt, values=MAC_FORMATS,
-                     state="readonly", width=23).pack(side="left")
-        for label, variable in (
-            ("Exclude Port-Channels (Po*)", self.exclude_po),
-            ("Exclude CPU MACs", self.exclude_cpu),
-            ("Only rows with IP match", self.only_ip),
-            ("Auto lookup after paste/load/drop", self.auto_lookup_after_drop),
-        ):
-            ttk.Checkbutton(resolver, text=label, variable=variable).pack(anchor="w", pady=3)
+        appearance = ttk.LabelFrame(content, text="Appearance")
+        appearance.pack(anchor="nw", fill="x", pady=(0, 8))
+        ttk.Checkbutton(
+            appearance,
+            text="Dark Mode",
+            variable=self.dark_mode,
+            command=self._apply_theme
+        ).pack(anchor="w", padx=8, pady=8)
+        ttk.Checkbutton(
+            appearance,
+            text="Auto lookup after paste/load/drop",
+            variable=self.auto_lookup_after_drop
+        ).pack(anchor="w", padx=8, pady=(0, 8))
 
-        appearance = ttk.LabelFrame(general, text="Appearance", padding=12)
-        appearance.pack(fill="x", pady=(0, 12))
-        ttk.Checkbutton(appearance, text="Dark mode", variable=self.dark_mode,
-                        command=self._apply_theme).pack(anchor="w")
-        ttk.Label(appearance, text="Customize the dark and light palettes on the Colors tab.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
-
-        vendor_db = ttk.LabelFrame(general, text="Vendor database", padding=12)
-        vendor_db.pack(fill="x", pady=(0, 12))
+        vendor_db = ttk.LabelFrame(content, text="Vendor Database")
+        vendor_db.pack(anchor="nw", fill="x", pady=(0, 8))
         db_row = ttk.Frame(vendor_db)
-        db_row.pack(anchor="w")
+        db_row.pack(anchor="w", padx=8, pady=8)
         ttk.Button(db_row, text="Update DB", command=self.update_db).pack(side="left", padx=(0, 6))
         ttk.Button(db_row, text="Load DB File", command=self.load_db_file).pack(side="left")
-        support = ttk.LabelFrame(general, text="Team support", padding=12)
-        support.pack(fill="x", pady=(0, 12))
-        ttk.Label(support, text="Diagnostic summaries omit raw device output, MACs, IPs, names, and file paths.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(0, 6))
-        support_row = ttk.Frame(support)
-        support_row.pack(anchor="w")
-        ttk.Button(support_row, text="Copy diagnostic summary",
-                   command=self.copy_diagnostic_summary).pack(side="left", padx=(0, 6))
-        ttk.Button(support_row, text="Open local log folder",
-                   command=self.open_log_folder).pack(side="left")
-        ttk.Label(general, text=f"Version: {APP_VERSION}  •  Tag: {DEVELOPER_TAG}",
-                  style="Muted.TLabel").pack(anchor="w")
 
-        top = ttk.Frame(colors)
-        top.pack(fill="x", pady=(0, 10))
-        ttk.Label(top, text="Edit palette:").pack(side="left", padx=(0, 8))
-        self.color_theme = tk.StringVar(value="dark" if self.dark_mode.get() else "light")
-        chooser = ttk.Combobox(top, textvariable=self.color_theme,
-                               values=("dark", "light"), state="readonly", width=12)
-        chooser.pack(side="left")
-        chooser.bind("<<ComboboxSelected>>", self._switch_color_theme)
-        ttk.Label(colors, text="Enter #RRGGBB values. Apply Colors updates the entire app and saves them.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
-
-        self.color_drafts = {theme: effective_palette(self.preferences, theme)
-                             for theme in THEMES}
-        self.color_vars = {}
-        self.color_swatches = {}
-        grid = ttk.Frame(colors)
-        grid.pack(fill="x")
-        split = (len(COLOR_LABELS) + 1) // 2
-        for index, (key, label) in enumerate(COLOR_LABELS.items()):
-            column, row_index = divmod(index, split)
-            cell = ttk.Frame(grid)
-            cell.grid(row=row_index, column=column, sticky="ew", padx=(0, 20), pady=5)
-            ttk.Label(cell, text=label, width=21).pack(side="left")
-            variable = tk.StringVar()
-            self.color_vars[key] = variable
-            ttk.Entry(cell, textvariable=variable, width=10).pack(side="left", padx=(2, 6))
-            swatch = tk.Label(cell, text="    ", relief="solid", borderwidth=1)
-            swatch.pack(side="left")
-            self.color_swatches[key] = swatch
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
-        self._load_color_fields()
-        self._color_theme_shown = self.color_theme.get()
-        self.color_error = tk.StringVar(value="")
-        ttk.Label(colors, textvariable=self.color_error, style="Error.TLabel").pack(
-            anchor="w", pady=(8, 4))
-        ttk.Button(colors, text="Apply Colors", style="Accent.TButton",
-                   command=self._apply_color_fields).pack(anchor="w")
-
-        footer = ttk.Frame(content)
-        footer.pack(fill="x", pady=(10, 0))
-        ttk.Button(footer, text="Reset All Settings to Defaults",
-                   command=self._reset_preferences).pack(side="left")
-        ttk.Button(footer, text="Back", command=self._close_settings).pack(side="right")
-
-    def _store_color_fields(self):
-        theme = self.color_theme.get()
-        if theme in THEMES:
-            self.color_drafts[theme] = {key: variable.get()
-                                        for key, variable in self.color_vars.items()}
-
-    def _load_color_fields(self):
-        draft = self.color_drafts[self.color_theme.get()]
-        for key, variable in self.color_vars.items():
-            value = draft[key]
-            variable.set(value)
-            try:
-                self.color_swatches[key].configure(background=normalize_color(value))
-            except ValueError:
-                self.color_swatches[key].configure(background=self._palette()["bg"])
-
-    def _switch_color_theme(self, _event=None):
-        # Combobox variable already names the new theme; preserve edits to the old one.
-        previous = getattr(self, "_color_theme_shown", None)
-        if previous in THEMES:
-            self.color_drafts[previous] = {key: variable.get()
-                                           for key, variable in self.color_vars.items()}
-        self._color_theme_shown = self.color_theme.get()
-        self._load_color_fields()
-        self.color_error.set("")
-
-    def _apply_color_fields(self):
-        self._store_color_fields()
-        normalized = {}
-        for theme, values in self.color_drafts.items():
-            normalized[theme] = {}
-            for key, value in values.items():
-                try:
-                    color = normalize_color(value)
-                except ValueError:
-                    self.color_theme.set(theme)
-                    self._color_theme_shown = theme
-                    self._load_color_fields()
-                    self.color_error.set(f"{theme.title()} / {COLOR_LABELS[key]}: use #RRGGBB.")
-                    return
-                if color != THEMES[theme][key]:
-                    normalized[theme][key] = color
-        for theme in THEMES:
-            palette = {**THEMES[theme], **normalized[theme]}
-            weak = [label for label, foreground, background in (
-                ("main text", "fg", "bg"), ("input text", "fg", "entry_bg"),
-                ("result text", "fg", "tree_bg"), ("table headings", "fg", "heading_bg"),
-                ("selected text", "select_fg", "select_bg"),
-            ) if contrast_ratio(palette[foreground], palette[background]) < 4.5]
-            if weak and not messagebox.askyesno(
-                    "Low-contrast colors",
-                    f"The {theme} palette has low contrast for: {', '.join(weak)}.\n\nApply anyway?",
-                    parent=self.root):
-                return
-        self.preferences["colors"] = normalized
-        self.color_drafts = {theme: effective_palette(self.preferences, theme)
-                             for theme in THEMES}
-        self._color_theme_shown = self.color_theme.get()
-        self._load_color_fields()
-        self.color_error.set("")
-        self._save_current_preferences()
-        self._apply_theme()
-        self.set_status("Colors saved")
-
-    def _reset_preferences(self):
-        if not messagebox.askyesno("Reset settings", "Restore all options and both color palettes to defaults?",
-                                   parent=self.root):
-            return
-        self.preferences = default_preferences()
-        self._suspend_settings_save = True
-        try:
-            for key, value in self.preferences["options"].items():
-                getattr(self, key).set(value)
-        finally:
-            self._suspend_settings_save = False
-        self.color_drafts = {theme: effective_palette(self.preferences, theme)
-                             for theme in THEMES}
-        self._color_theme_shown = self.color_theme.get()
-        self._load_color_fields()
-        self.color_error.set("")
-        self._save_current_preferences()
-        self._apply_theme()
-        self.set_status("Default settings restored")
-
-    def copy_diagnostic_summary(self):
-        report = self.input_report or {}
-        lines = [f"{APP_NAME} {APP_VERSION}", f"Windows: {platform.win32_ver()[0] or 'unknown'}",
-                 f"Python: {platform.python_version()}; packaged: {bool(getattr(sys, 'frozen', False))}",
-                 f"Last error type: {self.last_error_type}",
-                 f"MAC parsed: {report.get('mac_parsed', 'not run')}",
-                 f"MAC included: {report.get('mac_eligible', 'not run')}",
-                 f"MAC excluded: {report.get('mac_excluded', 'not run')}",
-                 f"ARP parsed: {report.get('arp_parsed', 'not run')}",
-                 f"MAC matched: {report.get('mac_matched', 'not run')}",
-                 f"Warnings: {report.get('warnings', 'not run')}"]
-        self.root.clipboard_clear()
-        self.root.clipboard_append("\n".join(lines))
-        self.set_status("Sanitized diagnostic summary copied")
-
-    def open_log_folder(self):
-        path = os.path.dirname(crash_log_path())
-        try:
-            os.makedirs(path, exist_ok=True)
-            os.startfile(path)
-        except OSError as exc:
-            messagebox.showerror("Logs", f"Could not open log folder:\n{exc}", parent=self.root)
+        credits = ttk.LabelFrame(content, text="Info")
+        credits.pack(anchor="nw", fill="x")
+        ttk.Label(credits, text=f"Tag: {DEVELOPER_TAG}").pack(anchor="w", padx=8, pady=(8, 2))
+        ttk.Label(credits, text=f"Version: {APP_VERSION}").pack(anchor="w", padx=8, pady=(2, 8))
 
     # ------------------------------------------------------------------
     # Helpers for tabs
@@ -1858,18 +1481,11 @@ class App:
     def _poll_lookup_results(self):
         try:
             for result in self._pop_lookup_results():
-                if not is_current_lookup_result(result, self.lookup_generation,
-                                                self._collect_lookup_inputs()):
-                    if result.get("generation") == self.lookup_generation:
-                        self.set_status("Inputs changed during lookup; run Lookup again")
-                    continue
                 status = result.get("status")
                 if status == "ok":
-                    self._finish_lookup(result["rows"], result["inputs"],
-                                        result.get("on_complete"), result["report"])
+                    self._finish_lookup(result["rows"], result["inputs"], result.get("on_complete"))
                 else:
-                    self.last_error_type = result.get("error_type", "LookupError")
-                    self.set_status(f"Lookup failed ({self.last_error_type}); see Settings → Team support")
+                    self.set_status(f"Error: {result.get('error', 'lookup failed')}")
         except Exception:
             log_exception("Error while polling lookup results")
 
@@ -2003,25 +1619,25 @@ class App:
         used_block_ids = set()
 
         for path in paths:
-            log_debug("Processing dropped file")
+            log_debug(f"Processing dropped path: {path}")
             if not os.path.isfile(path):
                 failures.append(f"{os.path.basename(path)}: not a file")
-                log_debug("Skipped dropped item: not a file")
+                log_debug(f"Skipped dropped path, not a file: {path}")
                 continue
 
             try:
                 content = self._read_text_file(path)
             except Exception as e:
                 failures.append(f"{os.path.basename(path)}: {e}")
-                log_exception("Failed reading dropped file")
+                log_exception(f"Failed reading dropped file: {path}")
                 continue
 
             kind = self._classify_dropped_file(path, content)
-            log_debug(f"Classified dropped file: kind={kind or 'unknown'} size={len(content)}")
+            log_debug(f"Classified dropped file: {path} kind={kind or 'unknown'} size={len(content)}")
             block = self._block_for_drop(source_widget, kind, used_block_ids)
             if not block:
                 failures.append(f"{os.path.basename(path)}: no matching tab")
-                log_debug("No matching tab for dropped file")
+                log_debug(f"No matching tab for dropped file: {path}")
                 continue
 
             self._load_text_into_block(
@@ -2032,7 +1648,7 @@ class App:
             )
             log_debug(
                 "Loaded dropped file into "
-                f"{block.get('default_host', 'unknown')} tab"
+                f"{block.get('default_host', 'unknown')} tab; hostname={block['host_var'].get()}"
             )
             used_block_ids.add(id(block))
             loaded += 1
@@ -2041,7 +1657,7 @@ class App:
             self.set_status(f"Loaded {loaded} dropped file(s)")
             log_debug(f"Drop handling loaded {loaded} file(s)")
         if failures:
-            log_debug(f"Drop handling failures: {len(failures)}")
+            log_debug("Drop handling failures: " + "; ".join(failures))
             messagebox.showwarning("Drag and Drop", "Some files were not loaded:\n\n" + "\n".join(failures))
         if loaded:
             self._schedule_auto_lookup("drop")
@@ -2117,76 +1733,6 @@ class App:
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         self.last_rows = []
-        self.visible_rows = []
-        self.input_report = None
-        self.result_count_var.set("0 results")
-        self._update_input_report_text()
-
-    def _clear_result_filters(self):
-        self.result_query.set("")
-        self.result_ip_filter.set("All rows")
-
-    def _update_result_headings(self):
-        for column, label in self.result_headings.items():
-            direction = (" ↓" if self.result_sort_descending else " ↑") if column == self.result_sort_column else ""
-            self.tree.heading(column, text=label + direction,
-                              command=lambda name=column: self._sort_result_column(name))
-
-    def _sort_result_column(self, column):
-        self.result_sort_descending = not self.result_sort_descending if column == self.result_sort_column else False
-        self.result_sort_column = column
-        self._update_result_headings()
-        self._refresh_result_view()
-
-    def _refresh_result_view(self):
-        if not hasattr(self, "tree"):
-            return
-        self.visible_rows = filter_sort_rows(
-            self.last_rows, self.result_query.get(), self.result_ip_filter.get(),
-            self.result_sort_column, self.result_sort_descending)
-        for iid in self.tree.get_children():
-            self.tree.delete(iid)
-        for index, row in enumerate(self.visible_rows):
-            tag = "evenrow" if index % 2 == 0 else "oddrow"
-            self.tree.insert("", "end", values=row, tags=(tag,))
-        self.result_count_var.set(f"{len(self.visible_rows)} of {len(self.last_rows)} results")
-
-    def _update_input_report_text(self):
-        if not hasattr(self, "report_text"):
-            return
-        report = self.input_report
-        lines = []
-        if report:
-            lines.append(f"MACs: {report['mac_parsed']} parsed, {report['mac_eligible']} included, "
-                         f"{report['mac_excluded']} excluded; {report['arp_parsed']} ARP entries. "
-                         f"{report['mac_matched']} MACs matched, {report['mac_unmatched']} unmatched.")
-            for device in report["devices"]:
-                if device["kind"] == "Switch":
-                    detail = (f"{device['kind']} {device['slot']} ({device['name']}): "
-                              f"{device['parsed']} parsed, {device['excluded']} excluded, "
-                              f"{device['matched']} matched, {device['unmatched']} unmatched")
-                elif device["kind"] == "Router":
-                    detail = f"Router {device['slot']} ({device['name']}): {device['parsed']} ARP entries"
-                else:
-                    detail = "Notice"
-                if device["warning"]:
-                    detail += f" — WARNING: {device['warning']}"
-                elif device.get("notice"):
-                    detail += f" — {device['notice']}"
-                lines.append(detail)
-        else:
-            lines.append("Run Lookup to see per-device parser and match counts.")
-        self.report_text.configure(state="normal")
-        self.report_text.delete("1.0", "end")
-        self.report_text.insert("1.0", "\n".join(lines))
-        self.report_text.configure(state="disabled")
-
-    def _toggle_input_report(self):
-        if self.report_frame.winfo_ismapped():
-            self.report_frame.grid_remove()
-        else:
-            self._update_input_report_text()
-            self.report_frame.grid()
 
     def _collect_lookup_inputs(self):
         switch_inputs = []
@@ -2234,8 +1780,6 @@ class App:
 
     def _run_lookup(self, on_complete=None):
         # Correlate MAC tables with ARP tables across all devices.
-        self.lookup_generation += 1
-        generation = self.lookup_generation
         self._clear_results()
         inputs = self._collect_lookup_inputs()
         loaded_switches = sum(1 for item in inputs["switch_inputs"] if (item.get("text") or "").strip())
@@ -2259,10 +1803,6 @@ class App:
                     exclude_po=inputs["exclude_po"],
                     exclude_cpu=inputs["exclude_cpu"],
                 )
-                report = build_input_report(
-                    inputs["switch_inputs"], inputs["router_inputs"],
-                    parse_ios_mac_table, parse_ios_arp_table,
-                    inputs["exclude_po"], inputs["exclude_cpu"])
 
                 # Optional filter: only rows with IP match
                 if inputs["only_ip"]:
@@ -2282,42 +1822,39 @@ class App:
 
                 self._queue_lookup_result({
                     "status": "ok",
-                    "generation": generation,
                     "rows": rows,
                     "inputs": inputs,
-                    "report": report,
                     "on_complete": on_complete,
                 })
             except Exception as e:
                 log_exception("Lookup failed")
                 self._queue_lookup_result({
                     "status": "error",
-                    "generation": generation,
-                    "inputs": inputs,
-                    "error_type": type(e).__name__,
+                    "error": str(e),
                 })
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _finish_lookup(self, rows, inputs, on_complete=None, report=None):
-        self.input_report = report
-        self._update_input_report_text()
+    def _finish_lookup(self, rows, inputs, on_complete=None):
         self._populate_tree(rows)
         if not rows:
             self.set_status(self._lookup_empty_status(inputs))
-        elif report and report["warnings"]:
-            self.set_status(f"{len(rows)} results • {report['warnings']} input warning(s); open Input report")
         if on_complete:
             on_complete()
 
     def _populate_tree(self, rows):
         self.last_rows = rows
-        self._refresh_result_view()
-        self.set_status(f"{len(self.visible_rows)} of {len(rows)} row(s) displayed")
+        for index, r in enumerate(rows):
+            tag = "evenrow" if index % 2 == 0 else "oddrow"
+            self.tree.insert("", "end", values=r, tags=(tag,))
+        self.set_status(f"{len(rows)} row(s) displayed")
 
     def _sorted_export_rows(self):
-        # Export exactly the rows and ordering currently shown in the results table.
-        return list(self.visible_rows)
+        # Sort by Switch (hostname), then Interface numerically.
+        return sorted(
+            self.last_rows,
+            key=lambda r: ((r[0] or ""), iface_sort_key(r[2] or ""))
+        )
 
     def _safe_filename_part(self, value):
         cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", (value or "").strip())
@@ -2327,7 +1864,7 @@ class App:
     def _export_default_filename(self, extension):
         switch_names = []
         router_names = []
-        for row in self.visible_rows:
+        for row in self.last_rows:
             sw = (row[0] or "").strip()
             router = (row[6] or "").strip()
             if sw and sw not in switch_names:
@@ -2350,9 +1887,9 @@ class App:
         self._run_lookup(on_complete=self._export_current_rows)
 
     def _export_current_rows(self):
-        # Export the current visible table, including its chosen sort order.
-        if not self.visible_rows:
-            messagebox.showinfo("Export CSV", "No visible results to export. Clear filters if needed.")
+        # Export current table to a CSV file, sorted by Hostname then Interface.
+        if not self.last_rows:
+            messagebox.showinfo("Export CSV", "No data to export.")
             return
 
         rows = self._sorted_export_rows()
@@ -2379,8 +1916,8 @@ class App:
         self._run_lookup(on_complete=self._export_current_rows_xlsx)
 
     def _export_current_rows_xlsx(self):
-        if not self.visible_rows:
-            messagebox.showinfo("Export Excel", "No visible results to export. Clear filters if needed.")
+        if not self.last_rows:
+            messagebox.showinfo("Export Excel", "No data to export.")
             return
 
         rows = self._sorted_export_rows()
@@ -2402,105 +1939,15 @@ class App:
             messagebox.showerror("Error", f"Failed to export Excel workbook:\n{e}")
 
     def clear_all(self):
-        # Keep a single in-memory undo snapshot. Raw inputs are never auto-saved.
-        if not any(b["txt"].get("1.0", "end").strip() or
-                   b["host_var"].get() != b["default_host"] for b in self.switch_blocks + self.router_blocks) and not self.last_rows:
-            self.set_status("Nothing to clear")
-            return
-        if not messagebox.askyesno("Clear All", "Clear all seven device inputs and results?\n\nYou can undo this until another Clear All or session open.",
-                                   parent=self.root):
-            return
-        self.undo_snapshot = self._session_snapshot()
-        self.lookup_generation += 1
+        # Clear all text inputs and table.
         for b in self.switch_blocks + self.router_blocks:
             b["txt"].delete("1.0", "end")
             b["host_var"].set(b.get("default_host", ""))
             self._set_block_source(b, "No file loaded")
-        self._clear_results()
-        self.set_status("Cleared • Session → Undo Clear All is available")
-
-    def _session_snapshot(self):
-        return {
-            "switches": [{"name": b["host_var"].get(), "text": b["txt"].get("1.0", "end-1c"),
-                          "source": b["source_var"].get()} for b in self.switch_blocks],
-            "routers": [{"name": b["host_var"].get(), "text": b["txt"].get("1.0", "end-1c"),
-                          "source": b["source_var"].get()} for b in self.router_blocks],
-            "rows": list(self.last_rows), "report": self.input_report,
-        }
-
-    def _restore_snapshot(self, snapshot, source_override=None):
-        self.lookup_generation += 1
-        for block, item in zip(self.switch_blocks, snapshot["switches"]):
-            block["txt"].delete("1.0", "end")
-            block["txt"].insert("1.0", item["text"])
-            block["host_var"].set(item["name"])
-            self._set_block_source(block, (source_override if item["text"] else "No file loaded")
-                                   or item.get("source", "No file loaded"))
-        for block, item in zip(self.router_blocks, snapshot["routers"]):
-            block["txt"].delete("1.0", "end")
-            block["txt"].insert("1.0", item["text"])
-            block["host_var"].set(item["name"])
-            self._set_block_source(block, (source_override if item["text"] else "No file loaded")
-                                   or item.get("source", "No file loaded"))
-        self._clear_results()
-        self.input_report = snapshot.get("report")
-        self._update_input_report_text()
-        self._populate_tree(snapshot.get("rows", []))
-
-    def undo_clear_all(self):
-        if self.undo_snapshot is None:
-            self.set_status("Nothing to undo")
-            return
-        if any(b["txt"].get("1.0", "end").strip() for b in self.switch_blocks + self.router_blocks):
-            if not messagebox.askyesno("Undo Clear All", "Undo will replace inputs entered since Clear All. Continue?",
-                                       parent=self.root):
-                return
-        snapshot = self.undo_snapshot
-        self.undo_snapshot = None
-        self._restore_snapshot(snapshot)
-        self.set_status("Clear All undone")
-
-    def save_session(self):
-        if not messagebox.askokcancel("Save Session",
-                                      "A session file contains the raw MAC and ARP output you entered. Save it only in an approved location.",
-                                      parent=self.root):
-            return
-        path = filedialog.asksaveasfilename(title="Save Resolver Session",
-                                            defaultextension=".sprsession",
-                                            filetypes=[("Resolver sessions", "*.sprsession"), ("All files", "*.*")],
-                                            initialfile="switchport-session.sprsession",
-                                            parent=self.root)
-        if not path:
-            return
-        snapshot = self._session_snapshot()
-        try:
-            write_session(path, snapshot["switches"], snapshot["routers"])
-            self.set_status(f"Session saved to {os.path.basename(path)}")
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Save Session", f"Could not save session:\n{exc}", parent=self.root)
-
-    def open_session(self):
-        path = filedialog.askopenfilename(title="Open Resolver Session",
-                                          filetypes=[("Resolver sessions", "*.sprsession"), ("All files", "*.*")],
-                                          parent=self.root)
-        if not path:
-            return
-        try:
-            if os.path.getsize(path) > 40_000_000:
-                raise ValueError("Session file is too large.")
-            session = read_session(path)
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Open Session", f"Could not open session:\n{exc}", parent=self.root)
-            return
-        if any(b["txt"].get("1.0", "end").strip() for b in self.switch_blocks + self.router_blocks):
-            if not messagebox.askyesno("Replace inputs", "Replace the current device inputs with this session?",
-                                       parent=self.root):
-                return
-        self.undo_snapshot = None
-        self._restore_snapshot({"switches": session["switches"], "routers": session["routers"],
-                                "rows": [], "report": None}, source_override="Loaded from session")
-        self._show_workspace("resolver")
-        self.set_status(f"Session opened: {os.path.basename(path)} • Run Lookup")
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        self.last_rows = []
+        self.set_status("Cleared")
 
     # ------------------------------------------------------------------
     # Vendor DB actions
@@ -2552,6 +1999,7 @@ def main():
     setup_crash_logging()
     root = tk.Tk()
     app = App(root)
+    root.geometry("1200x800")
     log_debug("Entering Tk mainloop")
     try:
         root.mainloop()
